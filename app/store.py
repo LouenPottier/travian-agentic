@@ -42,6 +42,7 @@ def village_to_dict(v: Village) -> dict:
         "oases": v.oases,
         "prisoners": v.prisoners,
         "loyalty": v.loyalty,
+        "celebration": v.celebration,
     }
 
 
@@ -70,6 +71,7 @@ def village_from_row(row: sqlite3.Row) -> Village:
         oases=d.get("oases", []),
         prisoners=d.get("prisoners", []),
         loyalty=d.get("loyalty", 100.0),
+        celebration=d.get("celebration"),
     )
 
 

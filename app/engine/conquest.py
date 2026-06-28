@@ -54,6 +54,11 @@ LOYALTY_DROP = {
 # Loyauté d'un village fraîchement conquis (approximation documentée, cf. en-tête).
 RESET_LOYALTY = 25.0
 
+# Bonus de réduction de loyauté (points) **par administrateur** quand une **grande
+# fête** est active dans le village d'où partent les chefs (cf. engine.celebration ;
+# support.travian.com « Celebrations and Town Hall » : grande fête ⇒ +5 % par admin).
+GREAT_CELEBRATION_BONUS = 5
+
 
 def chief_indices(tribe: Tribe) -> list[int]:
     """Index des unités « administrateur » (sénateur/chef) de la tribu."""
@@ -65,16 +70,21 @@ def count_chiefs(tribe: Tribe, units: list[int]) -> int:
     return sum(units[i] for i in chief_indices(tribe))
 
 
-def loyalty_drop(tribe: Tribe, n_chiefs: int, rng: _random.Random | None = None) -> float:
+def loyalty_drop(tribe: Tribe, n_chiefs: int, great_celebration: bool = False,
+                 rng: _random.Random | None = None) -> float:
     """Réduction totale de loyauté (%) pour `n_chiefs` administrateurs survivants.
 
     Chaque administrateur tire indépendamment dans la plage de sa tribu (vrai Travian).
-    `rng` injectable pour des tests déterministes."""
+    Si `great_celebration` (grande fête active au village d'origine), chaque administrateur
+    retire `GREAT_CELEBRATION_BONUS` points de plus. `rng` injectable pour des tests."""
     if n_chiefs <= 0:
         return 0.0
     lo, hi = LOYALTY_DROP.get(tribe, (20, 25))
     r = rng or _random
-    return float(sum(r.randint(lo, hi) for _ in range(n_chiefs)))
+    total = float(sum(r.randint(lo, hi) for _ in range(n_chiefs)))
+    if great_celebration:
+        total += GREAT_CELEBRATION_BONUS * n_chiefs
+    return total
 
 
 def conquer_eligible(target: V.Village, attacker_player_id: int,

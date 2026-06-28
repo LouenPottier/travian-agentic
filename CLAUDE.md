@@ -206,9 +206,24 @@ Phase 3 en cours (livrée incrémentalement) :
   ⚠️ **Kirilloid muet** → tous les chiffres viennent de la **doc officielle/wiki** (citée en
   tête de `conquest.py` : support.travian.com, unofficialtravian, travianlibrary). `RESET_LOYALTY`
   (=25) et la non-destruction des renforts stationnés ailleurs = **approximations documentées**.
-  Pas de ±5 % de célébration (dépend de l'hôtel de ville, item #2). UI : badge 🏳️ loyauté dans
+  Bonus **+5 %/chef de grande fête** branché (cf. hôtel de ville ci-dessous). UI : badge 🏳️ loyauté dans
   l'en-tête + récap loyauté/conquête dans les rapports off/déf (les chefs s'envoient comme des
   troupes via le rassemblement). Les administrateurs s'entraînent **au palais niv 10+** (déjà géré).
+- ✅ **Hôtel de ville / célébrations** (`app/engine/celebration.py`, verrouillé par
+  `tests/test_celebration.py`) : **petite fête** (hôtel de ville niv 1+) et **grande fête**
+  (niv 10+) générant des **points de culture**. Coût **fixe** + **durée par niveau** d'hôtel
+  de ville (÷ vitesse serveur), portés de **TravianZ** `GameEngine/Data/cel.php` (mécanique
+  que kirilloid ne couvre pas). Points accordés = **production de culture/jour plafonnée**
+  (village ≤ 500 pour la petite, compte ≤ 2000 pour la grande — **vrai Travian**, cf.
+  support.travian.com ; écart documenté avec le forfait 500/2000 de TravianZ), **figés au
+  lancement** (approx. documentée) et **crédités à la fin** par récolte paresseuse
+  (`harvest_completed` appelée depuis `expansion.accumulate_culture`, crédit au total de
+  culture du *joueur*). État persisté sur `Village.celebration` (`{type, ends_at, cp}`) ;
+  une seule fête à la fois par village. La **grande fête active** dans le village d'**origine**
+  des chefs ajoute **+5** points de loyauté retirés par administrateur
+  (`conquest.GREAT_CELEBRATION_BONUS`, branché dans `movement._resolve_battle`). API
+  `/api/village/{id}/celebration` (GET / POST `/{type}`) ; UI : panneau « Célébrations » dans
+  la modale de l'hôtel de ville ; `serialize` expose la fête en cours.
 - ⬜ **Combat héros — affinages** : le héros n'est embarqué que depuis son village d'attache
   (pas de relais entre villages) ; pas encore de monture→cavalerie en combat, ni de prise en
   compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.
@@ -216,12 +231,21 @@ Phase 3 en cours (livrée incrémentalement) :
 ### Mécaniques Phase 3 restant à implémenter (recoupé code / vrai T4.6 / TravianZ `GameEngine/`)
 Par ordre de rentabilité recommandé :
 1. ✅ **Conquête de village (loyauté + chefs)** — **fait** (cf. puce ✅ « Conquête de village »
-   ci-dessus, `app/engine/conquest.py`, `tests/test_conquest.py`). Reste à brancher le ±5 %
-   de célébration une fois l'hôtel de ville fait (item suivant).
-2. ⬜ **Hôtel de ville / célébrations** : `TOWNHALL` (id 23) existe (`buildings.py`, `effects.py`)
-   mais les **petite/grande célébrations** (points de culture ; la grande débloque le bonus de
-   conquête ±5 %/chef) ne sont pas implémentées. À brancher sur la culture déjà gérée
-   (`expansion.py`).
+   ci-dessus, `app/engine/conquest.py`, `tests/test_conquest.py`). Le bonus **+5 %/chef de la
+   grande fête** est désormais branché (cf. item #2, `conquest.GREAT_CELEBRATION_BONUS`).
+2. ✅ **Hôtel de ville / célébrations** — **fait** (`app/engine/celebration.py`, verrouillé par
+   `tests/test_celebration.py`). Petite fête (hôtel de ville niv 1+) / grande fête (niv 10+) :
+   coût fixe + durée par niveau ÷ vitesse serveur (TravianZ `GameEngine/Data/cel.php`). Points
+   de culture = production/jour **plafonnée** (village ≤ 500 / compte ≤ 2000, **vrai Travian** ;
+   écart documenté avec le forfait TravianZ), **figés au lancement** (approx. documentée) et
+   **crédités à la fin** (récolte paresseuse `harvest_completed`, appelée depuis
+   `expansion.accumulate_culture` ⇒ crédit au total de culture du *joueur*). État sur
+   `Village.celebration` (`{type, ends_at, cp}`, persisté). Une seule fête à la fois par village.
+   **Bonus de conquête** : tant qu'une **grande fête** est active dans le village d'**origine**
+   des chefs, chaque administrateur retire **+5** points de loyauté (`conquest.GREAT_CELEBRATION_BONUS`,
+   branché dans `movement._resolve_battle` via `celebration.great_celebration_active`). API
+   `/api/village/{id}/celebration` (GET état, POST `/{type}` lancer) ; UI : panneau
+   « Célébrations » dans la modale de l'hôtel de ville + champ `celebration` exposé par `serialize`.
 3. ⬜ **Alliances** : ambassade = « à venir » (`web/index.html`). Création/adhésion, diplomatie
    (confédération/guerre/NAP) et surtout les **bonus d'alliance T4.6** (philosophie, métallurgie,
    recrutement, commerce…). Réf. TravianZ `Alliance.php`. Dépend d'avoir plusieurs joueurs.

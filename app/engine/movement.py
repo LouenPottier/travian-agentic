@@ -388,15 +388,17 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
         if n_chiefs > 0:
             ok, reason = CQ.conquer_eligible(target, origin.player_id, now)
             if ok:
+                from app.engine import celebration as CEL
+                great = CEL.great_celebration_active(origin, now)
                 before = target.loyalty
-                drop = CQ.loyalty_drop(origin.tribe, n_chiefs)
+                drop = CQ.loyalty_drop(origin.tribe, n_chiefs, great_celebration=great)
                 target.loyalty = max(0.0, before - drop)
                 if target.loyalty <= 0.0:
                     conquest = CQ.conquer_village(target, origin.player_id,
                                                   origin.tribe, survivors, now)
                 loyalty_event = {"chefs": n_chiefs, "baisse": round(drop),
                                  "avant": round(before), "apres": round(target.loyalty),
-                                 "conquis": conquest is not None}
+                                 "grande_fete": great, "conquis": conquest is not None}
             else:
                 loyalty_event = {"chefs": n_chiefs, "bloque": reason}
 

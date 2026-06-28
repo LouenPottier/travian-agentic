@@ -69,10 +69,15 @@ def accumulate_culture(player_id: int, now: float | None = None) -> float:
     le total cumulé courant."""
     now = now or _time.time()
     culture, culture_at = store.get_culture(player_id)
+    # Fêtes terminées (hôtel de ville) : crédit ponctuel de leurs points de culture,
+    # indépendant de l'horloge d'accumulation (cf. engine.celebration).
+    from app.engine import celebration as CEL
+    culture += CEL.harvest_completed(player_id, now)
     if culture_at == 0:  # première lecture : on amorce l'horloge sans rétroactif
         store.set_culture(player_id, culture, now)
         return culture
     if now <= culture_at:
+        store.set_culture(player_id, culture, culture_at)
         return culture
     per_day = player_culture_per_day(player_id)
     # Vitesse serveur : prise du premier village du joueur (toutes identiques ici).

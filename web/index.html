@@ -118,8 +118,8 @@
 const RICON = ["🪵","🧱","⛏️","🌾"];
 // Identifiants de bâtiments (mêmes valeurs que app/data/buildings.py:B).
 const Bk = {SMITHY:12, MAIN:14, RALLY:15, MARKET:16, EMBASSY:17, BARRACKS:18,
-  STABLES:19, WORKSHOP:20, ACADEMY:21, RESIDENCE:24, PALACE:25, TRADE_OFFICE:27, TRAPPER:35,
-  GREAT_BARRACKS:28, GREAT_STABLES:29, HERO_MANSION:36};
+  STABLES:19, WORKSHOP:20, ACADEMY:21, TOWNHALL:23, RESIDENCE:24, PALACE:25,
+  TRADE_OFFICE:27, TRAPPER:35, GREAT_BARRACKS:28, GREAT_STABLES:29, HERO_MANSION:36};
 const TRAIN_BUILDINGS = new Set([Bk.BARRACKS, Bk.STABLES, Bk.WORKSHOP, Bk.RESIDENCE,
   Bk.PALACE, Bk.GREAT_BARRACKS, Bk.GREAT_STABLES]);
 const FIELD_COLOR = {0:"#3f6b3a",1:"#b5713a",2:"#707682",3:"#c8a82f"};
@@ -162,7 +162,7 @@ function iso(cells){
       <polygon points="${lft}" fill="${shade(p.color,-34)}"/>
       <polygon points="${rgt}" fill="${shade(p.color,-18)}"/>
       <polygon points="${top}" fill="${p.color}" stroke="#0007" ${p.dashed?'stroke-dasharray="4 3"':''}/>`;
-    if(p.img) s+=`<image href="${p.img}" x="${x-19}" y="${y+TH/2-31}" width="38" height="38"
+    if(p.img) s+=`<image href="${p.img}" x="${x-19}" y="${y+TH/2-31+(p.imgDy||0)}" width="38" height="38"
         style="image-rendering:pixelated"/>`;
     if(p.icon) s+=`<text x="${x}" y="${y+TH/2+6}" text-anchor="middle" font-size="17">${p.icon}</text>`;
     if(p.badge!=null) s+=`<text x="${x+TW/2-9}" y="${y+TH/2+4}" text-anchor="middle"
@@ -201,7 +201,7 @@ function render(v){
   const fcells=[];
   for(const [idx,[gx,gy]] of Object.entries(FIELD_POS)){
     const s=SLOTMAP[idx]; const bid=s.building_id; const im=bimg(bid);
-    fcells.push({gx,gy, color:FIELD_COLOR[bid], img:im,
+    fcells.push({gx,gy, color:FIELD_COLOR[bid], img:im, imgDy:10,
       icon:(im?"":FIELD_ICON[bid])+(s.finish_in!=null?"⏳":""),
       badge:s.level, click:`openSlot(${idx})`});
   }
@@ -293,6 +293,7 @@ function renderPanel(s, P){
   if(bid===Bk.ACADEMY)  return loadAcademyPanel(P);
   if(bid===Bk.SMITHY)   return loadSmithyPanel(P);
   if(bid===Bk.TRAPPER)  return loadTrapperPanel(P);
+  if(bid===Bk.TOWNHALL) return loadCelebrationPanel(P);
   if(bid===Bk.EMBASSY){ P.innerHTML=secTitle("Ambassade")+`<div class="cost" style="opacity:.7">Diplomatie & alliances : à venir.</div>`; return; }
   if(bid===Bk.HERO_MANSION){
     const os=LAST.oasis_slots||{used:0,max:0};
@@ -519,6 +520,38 @@ async function loadTrapperPanel(P){
 }
 async function releasePrisoner(i){
   const d=await post(`/api/village/${CURRENT}/prisoners/${i}/release`,null,"modalMsg");
+  if(d) render(d.village);
+}
+
+// --- Panneau : hôtel de ville (célébrations → points de culture) -------------
+async function loadCelebrationPanel(P){
+  const d=await post(`/api/village/${CURRENT}/celebration`,{method:"GET"},"modalMsg");
+  if(MODAL_SLOT==null) return;
+  if(!d){ P.innerHTML=secTitle("Hôtel de ville")+`<div class="cost" style="opacity:.6">Indisponible.</div>`; return; }
+  let h=secTitle("Célébrations");
+  if(d.current){
+    const nom=d.current.type===2?"Grande fête":"Petite fête";
+    h+=`<div class="cost" style="margin-bottom:6px">🎉 <b>${nom}</b> en cours — fin dans ${fmtTimer(d.current.remaining)} · +${d.current.cp} pts de culture à la fin</div>`;
+  }
+  h+=`<div class="bldlist">`;
+  for(const o of d.options){
+    const nom=o.type===2?"Grande fête":"Petite fête";
+    h+=`<div class="bld"><div class="name">${nom}</div>`;
+    if(!o.unlocked){
+      h+=`<div class="cost" style="opacity:.6">🔒 hôtel de ville niv ${o.min_townhall} requis</div></div>`;
+      continue;
+    }
+    h+=`<div class="cost">${fmtCost(o.cost)}</div>
+        <div class="cost">⏱️ ${fmtTimer(o.duration)} · 🎭 +${o.cp} pts de culture</div>`;
+    if(o.can_start) h+=`<button onclick="startCel(${o.type})">Célébrer</button>`;
+    else h+=`<div class="cost" style="opacity:.6">${d.current?"fête déjà en cours":"indisponible"}</div>`;
+    h+=`</div>`;
+  }
+  h+=`</div><div class="cost" style="opacity:.6;margin-top:6px">Petite fête : culture/jour du village (max 500). Grande fête (niv 10+) : culture/jour du compte (max 2000) ; pendant qu'elle dure, chaque chef retire +5 % de loyauté en conquête.</div>`;
+  P.innerHTML=h;
+}
+async function startCel(type){
+  const d=await post(`/api/village/${CURRENT}/celebration/${type}`,null,"modalMsg");
   if(d) render(d.village);
 }
 

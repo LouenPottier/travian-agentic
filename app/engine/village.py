@@ -112,6 +112,10 @@ class Village:
     # Loyauté (0..100) : cible de la conquête par chef/sénateur. Régénère au passage
     # du temps (+⅔ × niveau du bâtiment d'administration / h, cf. engine.conquest).
     loyalty: float = 100.0
+    # Célébration en cours à l'hôtel de ville (cf. engine.celebration) : None ou
+    # {"type": 1|2, "ends_at": float, "cp": int}. Les points de culture sont crédités
+    # paresseusement à la fin (récolte par celebration.harvest_completed).
+    celebration: dict | None = None
 
 
 # Emplacements : 1..18 champs de ressources, 19..38 centre du village,

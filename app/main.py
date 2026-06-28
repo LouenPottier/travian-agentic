@@ -26,6 +26,7 @@ from app.engine import effects as EFF
 from app.engine import hero as HERO
 from app.engine import expansion as EXP
 from app.engine import oasis as OAS
+from app.engine import celebration as CEL
 from app.data import items as IT
 
 app = FastAPI(title="Travian local — T4.6")
@@ -210,6 +211,13 @@ def serialize(v: V.Village) -> dict:
                  "targets": [{"id": bid, "name": BLD.get(bid).name}
                              for bid in CATA_TARGET_BUILDINGS]}
 
+    # Hôtel de ville : célébration en cours (pour l'indicateur d'en-tête / l'API agents).
+    celebration = None
+    if CEL.is_active(v, now):
+        celebration = {"type": v.celebration["type"],
+                       "remaining": round(v.celebration["ends_at"] - now),
+                       "cp": v.celebration["cp"]}
+
     # Place de marché : niveau, marchands (total / libres), capacité par marchand.
     market = None
     if M.merchants_total(v) > 0:
@@ -229,6 +237,7 @@ def serialize(v: V.Village) -> dict:
         "queue_len": len(v.queue), "max_queue": v.max_queue, "slots": slots,
         "troops": troops, "training": training, "military": military,
         "movements": moves, "market": market, "hero_here": hero_here, "siege": siege,
+        "celebration": celebration,
         "oases": [{"x": o["x"], "y": o["y"], "label": W.oasis_label(o["code"]),
                    "emoji": W.oasis_emoji(o["code"])} for o in v.oases],
         "oasis_slots": {"used": len(v.oases), "max": OAS.max_oases(v)},
@@ -442,6 +451,31 @@ def upgrade_unit(village_id: int, unit_index: int):
     except V.BuildError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "village": serialize(v)}
+
+
+@app.get("/api/village/{village_id}/celebration")
+def celebration_state(village_id: int):
+    """Hôtel de ville : célébration en cours + options (petite/grande fête)."""
+    v = _get(village_id)
+    if V.building_levels(v).get(B.TOWNHALL, 0) < 1:
+        raise HTTPException(status_code=400, detail="Pas d'hôtel de ville dans ce village.")
+    now = time.time()
+    if v.player_id is not None:
+        EXP.accumulate_culture(v.player_id, now)  # récolte les fêtes terminées
+        v = store.load_village(village_id)
+    return CEL.celebration_status(v, now)
+
+
+@app.post("/api/village/{village_id}/celebration/{ctype}")
+def start_celebration(village_id: int, ctype: int):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        CEL.start_celebration(village_id, HUMAN_PLAYER_ID, ctype, time.time())
+    except CEL.CelebrationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "village": serialize(store.load_village(village_id))}
 
 
 def _prisoner_view(p: dict) -> dict:
