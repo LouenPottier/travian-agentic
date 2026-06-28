@@ -40,6 +40,7 @@ def village_to_dict(v: Village) -> dict:
         "traps": v.traps,
         "trap_queue": [[t.remaining, t.per_unit, t.next_finish] for t in v.trap_queue],
         "oases": v.oases,
+        "prisoners": v.prisoners,
     }
 
 
@@ -66,6 +67,7 @@ def village_from_row(row: sqlite3.Row) -> Village:
         upgrades=d.get("upgrades", [0] * 10), upgrade_queue=upgrade_queue,
         traps=d.get("traps", 0), trap_queue=trap_queue,
         oases=d.get("oases", []),
+        prisoners=d.get("prisoners", []),
     )
 
 

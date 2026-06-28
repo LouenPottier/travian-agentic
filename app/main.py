@@ -422,9 +422,19 @@ def upgrade_unit(village_id: int, unit_index: int):
     return {"ok": True, "village": serialize(v)}
 
 
+def _prisoner_view(p: dict) -> dict:
+    """Vue lisible d'un groupe de prisonniers (noms d'unités + village d'origine)."""
+    units = UNITS[p["tribe"]]
+    items = [{"name": units[i].name, "count": p["units"][i]}
+             for i in range(10) if p["units"][i] > 0]
+    owner = store.load_village(p["village_id"])
+    return {"village_id": p["village_id"], "owner": owner.name if owner else "?",
+            "total": sum(p["units"]), "units": items}
+
+
 @app.get("/api/village/{village_id}/trapper")
 def trapper(village_id: int):
-    """Trappeur : capacité de pièges, pièges construits / en cours, coût unitaire."""
+    """Trappeur : capacité de pièges, pièges construits / en cours, prisonniers retenus."""
     v = _get(village_id)
     if V.building_levels(v).get(B.TRAPPER, 0) < 1:
         raise HTTPException(status_code=400, detail="Pas de trappeur dans ce village.")
@@ -435,7 +445,33 @@ def trapper(village_id: int):
             "pending": V.traps_pending(v), "queue": pending,
             "free": V.trap_capacity(v) - V.traps_total(v),
             "trap_cost": list(V.TRAP_COST),
-            "trap_time": round(V.TRAP_TIME / v.server_speed)}
+            "trap_time": round(V.TRAP_TIME / v.server_speed),
+            "held": V.prisoners_count(v),
+            "prisoners": [_prisoner_view(p) for p in v.prisoners]}
+
+
+@app.post("/api/village/{village_id}/prisoners/{index}/release")
+def release_prisoners(village_id: int, index: int):
+    """Libère un groupe de prisonniers : retour immédiat à leur village d'origine
+    (approximation : le vrai Travian les renvoie en trajet)."""
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        p = V.release_prisoner(v, index)
+    except V.BuildError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    store.save_village(v)
+    owner = store.load_village(p["village_id"])
+    if owner is not None:
+        now = time.time()
+        V.tick(owner, now)
+        for i in range(10):
+            owner.troops[i] += p["units"][i]
+        store.save_village(owner)
+        store.add_report(owner.player_id, now, "🕊️ Prisonniers libérés",
+                         {"type": "release", "de": v.name, "unites": p["units"]})
+    return {"ok": True, "village": serialize(v)}
 
 
 @app.post("/api/village/{village_id}/traps/{count}")

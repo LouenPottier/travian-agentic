@@ -105,6 +105,10 @@ class Village:
     # village. Chaque entrée : {"x", "y", "code"} (code de bonus de la case, cf.
     # data/world). Le nombre maximal dépend du niveau du manoir (cf. engine.oasis).
     oases: list[dict] = field(default_factory=list)
+    # Prisonniers (pièges du trappeur gaulois) : assaillants capturés, retenus ici.
+    # Chaque entrée : {"player_id", "village_id", "tribe", "units": [10]}. Chaque
+    # unité retenue occupe un piège ; un groupe est libérable (retour au propriétaire).
+    prisoners: list[dict] = field(default_factory=list)
 
 
 # Emplacements : 1..18 champs de ressources, 19..38 centre du village,
@@ -637,6 +641,65 @@ def enqueue_traps(v: Village, count: int, now: float | None = None) -> TrapOrder
     order = TrapOrder(remaining=count, per_unit=per_unit, next_finish=free + per_unit)
     v.trap_queue.append(order)
     return order
+
+
+# --- Pièges en combat : capture & prisonniers -------------------------------
+# Modèle de capture (fidèle au vrai Travian / référence TravianZ, kirilloid muet) :
+# à l'attaque, les pièges retiennent jusqu'à `free_traps` assaillants AVANT la
+# bataille (répartis au prorata des effectifs). Les capturés ne combattent pas et
+# ne meurent pas : ils deviennent prisonniers du village défenseur (un piège occupé
+# par unité). Le surplus livre bataille normalement.
+def prisoners_count(v: Village) -> int:
+    """Nombre total d'assaillants retenus prisonniers (un piège occupé par unité)."""
+    return sum(sum(p["units"]) for p in v.prisoners)
+
+
+def free_traps(v: Village) -> int:
+    """Pièges disponibles pour capturer = pièges posés − prisonniers déjà retenus."""
+    return max(0, v.traps - prisoners_count(v))
+
+
+def distribute_traps(units: list[int], n: int) -> list[int]:
+    """Répartit `n` captures au prorata des effectifs assaillants (plus grand reste),
+    plafonné par l'effectif de chaque type. Renvoie le vecteur capturé (10 indices)."""
+    total = sum(units)
+    n = min(max(0, n), total)
+    if n <= 0:
+        return [0] * len(units)
+    exact = [units[i] * n / total for i in range(len(units))]
+    caught = [int(e) for e in exact]
+    rem = n - sum(caught)
+    order = sorted(range(len(units)), key=lambda i: exact[i] - caught[i], reverse=True)
+    k = 0
+    while rem > 0 and k < 100 * len(units):
+        i = order[k % len(order)]
+        if caught[i] < units[i]:
+            caught[i] += 1
+            rem -= 1
+        k += 1
+    return caught
+
+
+def add_prisoners(v: Village, player_id: int, village_id: int,
+                  tribe: int, units: list[int]) -> None:
+    """Retient un groupe d'assaillants capturés, regroupé par village d'origine."""
+    if sum(units) <= 0:
+        return
+    for p in v.prisoners:
+        if p["village_id"] == village_id and p["player_id"] == player_id:
+            for i in range(10):
+                p["units"][i] += units[i]
+            return
+    v.prisoners.append({"player_id": player_id, "village_id": village_id,
+                        "tribe": int(tribe), "units": list(units)})
+
+
+def release_prisoner(v: Village, index: int) -> dict:
+    """Retire et renvoie un groupe de prisonniers (la réintégration chez le
+    propriétaire est faite par l'appelant, qui a accès au store)."""
+    if not (0 <= index < len(v.prisoners)):
+        raise BuildError("Prisonnier introuvable.")
+    return v.prisoners.pop(index)
 
 
 # --- Village de départ standard (4-4-4-6) -----------------------------------

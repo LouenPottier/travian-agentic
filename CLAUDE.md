@@ -93,9 +93,13 @@ Phase 3 en cours (livrée incrémentalement) :
   l'entraînement des unités non basiques), **forge → amélioration** des unités (transmise au
   combat via `movement.py`, plafonnée par le niveau de la forge), **trappeur → pièges**. État
   persisté (`research`/`upgrades`/`traps` + files). Verrouillé par `tests/test_buildings.py`.
-  ⚠️ Pièges encore non pris en compte *dans la résolution de combat* (capture des assaillants) :
-  construction + capacité seulement, à câbler. Grande caserne/écurie : modale = amélioration
-  seule (remappage du producteur d'unités à faire).
+  ✅ **Pièges en combat** (`movement._resolve_battle`, verrouillé par `tests/test_buildings.py`) :
+  capture **pré-combat** des assaillants (modèle vrai Travian / TravianZ, kirilloid muet) — jusqu'à
+  `village.free_traps` unités retenues (réparties au prorata, `distribute_traps`), le surplus combat ;
+  capture totale ⇒ pas de bataille. Les capturés deviennent **prisonniers** du défenseur (`Village.prisoners`,
+  un piège occupé par unité), libérables (`/prisoners/{i}/release` ⇒ retour immédiat au propriétaire,
+  approximation). UI : prisonniers + bouton « Libérer » dans la modale du trappeur. Grande caserne/écurie :
+  modale = amélioration seule (remappage du producteur d'unités à faire).
 - ✅ **Expansion 2ᵉ village** (`app/engine/expansion.py`, verrouillé par `tests/test_expansion.py`) :
   **points de culture** cumulés par *joueur* (table `players.culture`/`culture_at`, accumulation
   paresseuse = somme des `culture_at` des bâtiments de tous ses villages, ×vitesse serveur),

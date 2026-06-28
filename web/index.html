@@ -465,7 +465,20 @@ async function loadTrapperPanel(P){
   if(d.free>0) h+=`<div style="margin-top:6px"><input id="trapN" type="number" min="1" max="${d.free}" value="${Math.min(10,d.free)}" style="width:70px">
       <button onclick="buildTraps()">Construire</button> <span class="cost" style="opacity:.6">(max ${d.free})</span></div>`;
   else h+=`<div class="cost" style="opacity:.6">Capacité de pièges atteinte.</div>`;
+  // Prisonniers retenus dans les pièges (assaillants capturés)
+  if(d.prisoners&&d.prisoners.length){
+    h+=secTitle(`Prisonniers (${d.held})`);
+    d.prisoners.forEach((p,i)=>{
+      const desc=p.units.map(u=>`${u.count} ${u.name}`).join(", ");
+      h+=`<div class="cost" style="margin-top:4px">🔒 ${desc} <span style="opacity:.6">(de ${p.owner})</span>
+          <button onclick="releasePrisoner(${i})" style="margin-left:6px">Libérer</button></div>`;
+    });
+  }
   P.innerHTML=h; restoreInputs(P,saved);
+}
+async function releasePrisoner(i){
+  const d=await post(`/api/village/${CURRENT}/prisoners/${i}/release`,null,"modalMsg");
+  if(d) render(d.village);
 }
 
 // --- Vue d'ensemble (lecture seule) : troupes, formation, mouvements ---------

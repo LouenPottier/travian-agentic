@@ -112,11 +112,57 @@ def test_trapper():
     print(f"✅ trappeur : {v.traps}/{cap} pièges construits, coût débité")
 
 
+def test_traps_in_combat():
+    """Les pièges capturent les assaillants AVANT la bataille : ils deviennent
+    prisonniers (non tués), le surplus combat. Capture totale ⇒ pas de bataille."""
+    store.DB_PATH = Path(tempfile.mkdtemp()) / "traps_combat.db"
+    store.init_db()
+    pid = store.create_player("Att", Tribe.GAULS)
+    did = store.create_player("Def", Tribe.GAULS)
+    now = time.time()
+    att = V.new_village("Att", Tribe.GAULS, server_speed=100, x=0, y=0, player_id=pid)
+    att.troops[1] = 50                  # 50 épéistes
+    att = store.insert_village(att)
+    deff = V.new_village("Def", Tribe.GAULS, server_speed=100, x=1, y=0, player_id=did)
+    deff.troops[0] = 100                # 100 phalanges en défense
+    deff.traps = 20                     # 20 pièges posés
+    deff = store.insert_village(deff)
+
+    info = M.send(att.id, deff.id, pid, "raid", [0, 50] + [0] * 8, now)
+    M.process_due(now + info["arrive_in"] + 1)
+
+    d2 = store.load_village(deff.id)
+    assert V.prisoners_count(d2) == 20, V.prisoners_count(d2)
+    rep = next(r for r in store.reports_for(pid) if r["body"].get("type") == "offensive")
+    assert sum(rep["body"]["captures"]) == 20, rep["body"]["captures"]
+    # Seuls 30 épéistes (50−20 piégés) ont combattu : survivants ≤ 30.
+    assert sum(rep["body"]["survivantes"]) <= 30
+    print(f"✅ pièges : {sum(rep['body']['captures'])} capturés, le surplus combat")
+
+    # Capture totale : assez de pièges pour tout l'assaillant ⇒ aucune bataille.
+    deff2 = V.new_village("Def2", Tribe.GAULS, server_speed=100, x=2, y=0, player_id=did)
+    deff2.troops[0] = 100
+    deff2.traps = 100
+    deff2 = store.insert_village(deff2)
+    a2 = store.load_village(att.id); a2.troops[1] = 40; store.save_village(a2)
+    info2 = M.send(att.id, deff2.id, pid, "attack", [0, 40] + [0] * 8, now)
+    M.process_due(now + info2["arrive_in"] + 1)
+    d3 = store.load_village(deff2.id)
+    assert V.prisoners_count(d3) == 40, V.prisoners_count(d3)
+    assert d3.troops[0] == 100, "défense intacte (pas de bataille livrée)"
+
+    # Libération : le groupe quitte les pièges (réintégration côté API).
+    grp = V.release_prisoner(d3, 0)
+    assert sum(grp["units"]) == 40 and V.prisoners_count(d3) == 0
+    print("✅ capture totale ⇒ pas de bataille ; libération vide les pièges")
+
+
 def main():
     test_research_gating()
     test_smithy_combat()
     test_trapper()
-    print("\n✅ Mécaniques de bâtiments (académie / forge / trappeur) validées")
+    test_traps_in_combat()
+    print("\n✅ Mécaniques de bâtiments (académie / forge / trappeur / pièges) validées")
 
 
 if __name__ == "__main__":

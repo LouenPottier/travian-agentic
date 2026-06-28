@@ -204,62 +204,78 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None):
     défenseur (présent dans la cible) est chargé et renforce la défense.
     """
     from app.engine import hero as H
-    off = C.Off(units=UNITS[origin.tribe], numbers=list(units),
-                upgrades=list(origin.upgrades), pop=V.population(origin), kind=kind)
-    if att_hero is not None:
-        off.hero_power = H.combat_power(att_hero)
-        off.bonus = H.effective(att_hero)["off_bonus"]
-    deff = C.Defender(units=UNITS[target.tribe], numbers=list(target.troops),
-                      upgrades=list(target.upgrades))
-    place = _build_place(target)
+    # Pièges du trappeur (Gaulois) : capture pré-combat des assaillants. Jusqu'à
+    # `free_traps` unités sont retenues (réparties au prorata) et ne combattent pas ;
+    # le surplus livre bataille. Le héros n'est pas piégeable (il combat toujours).
+    trapped = V.distribute_traps(list(units), V.free_traps(target))
+    fight = [units[i] - trapped[i] for i in range(10)]
+    no_battle = sum(fight) == 0 and att_hero is None
 
-    # Héros défenseur : présent et vivant dans la cible.
-    def_hero = H.load(target.player_id)
-    if def_hero is not None and (def_hero.home_village_id != target.id
-                                 or def_hero.status != "home" or def_hero.health <= 0):
-        def_hero = None
-    if def_hero is not None:
-        place.def_extra += H.combat_power(def_hero)
-        place.def_bonus_extra = H.effective(def_hero)["def_bonus"]
-
-    res = C.combat(place, off, [deff])
-
-    survivors = [round(units[i] * (1 - res.off_losses)) for i in range(10)]
     def_before = list(target.troops)
-    target.troops = [round(target.troops[i] * (1 - res.def_losses)) for i in range(10)]
+    loot = [0, 0, 0, 0]
+    hero_alive = True
+    def_hero = None
+    off_losses = def_losses = 0.0
+
+    if not no_battle:
+        off = C.Off(units=UNITS[origin.tribe], numbers=list(fight),
+                    upgrades=list(origin.upgrades), pop=V.population(origin), kind=kind)
+        if att_hero is not None:
+            off.hero_power = H.combat_power(att_hero)
+            off.bonus = H.effective(att_hero)["off_bonus"]
+        deff = C.Defender(units=UNITS[target.tribe], numbers=list(target.troops),
+                          upgrades=list(target.upgrades))
+        place = _build_place(target)
+
+        # Héros défenseur : présent et vivant dans la cible.
+        def_hero = H.load(target.player_id)
+        if def_hero is not None and (def_hero.home_village_id != target.id
+                                     or def_hero.status != "home" or def_hero.health <= 0):
+            def_hero = None
+        if def_hero is not None:
+            place.def_extra += H.combat_power(def_hero)
+            place.def_bonus_extra = H.effective(def_hero)["def_bonus"]
+
+        res = C.combat(place, off, [deff])
+        off_losses, def_losses = res.off_losses, res.def_losses
+        target.troops = [round(target.troops[i] * (1 - def_losses)) for i in range(10)]
+
+    survivors = [round(fight[i] * (1 - off_losses)) for i in range(10)]
 
     # Butin : capacité de transport des survivants
     cap = sum(survivors[i] * UNITS[origin.tribe][i].capacity for i in range(10))
     avail = sum(target.resources)
-    loot = [0, 0, 0, 0]
     take = min(cap, avail)
     if avail > 0 and take > 0:
         for i in range(4):
             loot[i] = round(take * target.resources[i] / avail)
             target.resources[i] = max(0.0, target.resources[i] - loot[i])
+
+    # Les assaillants capturés deviennent prisonniers du village défenseur.
+    if sum(trapped) > 0:
+        V.add_prisoners(target, origin.player_id, origin.id, int(origin.tribe), trapped)
     store.save_village(target)
 
     # Héros : XP (unités ennemies tuées) + perte de santé (pertes de son camp).
-    hero_alive = True
-    att_killed = sum(units[i] - survivors[i] for i in range(10))
+    att_killed = sum(fight[i] - survivors[i] for i in range(10))
     def_killed = sum(def_before[i] - target.troops[i] for i in range(10))
     if att_hero is not None:
-        hero_alive = not H.apply_combat(att_hero, res.off_losses, def_killed, now)
+        hero_alive = not H.apply_combat(att_hero, off_losses, def_killed, now)
         H.save(att_hero)
     if def_hero is not None:
-        H.apply_combat(def_hero, res.def_losses, att_killed, now)
+        H.apply_combat(def_hero, def_losses, att_killed, now)
         H.save(def_hero)
 
-    # Rapports
+    # Rapports (captures = assaillants piégés ; survivants = ceux qui ont combattu)
     store.add_report(origin.player_id, now, f"⚔️ Attaque sur {target.name}", {
         "type": "offensive", "cible": target.name, "kind": kind,
-        "envoyees": list(units), "survivantes": survivors,
-        "pertes_pct": round(res.off_losses * 100), "butin": loot,
+        "envoyees": list(units), "survivantes": survivors, "captures": trapped,
+        "pertes_pct": round(off_losses * 100), "butin": loot,
         "hero": att_hero is not None, "hero_alive": hero_alive})
     store.add_report(target.player_id, now, f"🛡️ Défense de {target.name}", {
         "type": "defensive", "attaquant": origin.name, "kind": kind,
-        "def_avant": def_before, "def_apres": target.troops,
-        "pertes_pct": round(res.def_losses * 100), "butin_pille": loot,
+        "def_avant": def_before, "def_apres": target.troops, "captures": trapped,
+        "pertes_pct": round(def_losses * 100), "butin_pille": loot,
         "hero_def": def_hero is not None})
     return survivors, loot, hero_alive
 
