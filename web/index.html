@@ -288,10 +288,16 @@ function renderPanel(s, P){
   if(bid===Bk.SMITHY)   return loadSmithyPanel(P);
   if(bid===Bk.TRAPPER)  return loadTrapperPanel(P);
   if(bid===Bk.EMBASSY){ P.innerHTML=secTitle("Ambassade")+`<div class="cost" style="opacity:.7">Diplomatie & alliances : à venir.</div>`; return; }
-  if(bid===Bk.HERO_MANSION){ P.innerHTML=secTitle("Manoir du héros")+
+  if(bid===Bk.HERO_MANSION){
+    const os=LAST.oasis_slots||{used:0,max:0};
+    const list=(LAST.oases&&LAST.oases.length)
+      ? LAST.oases.map(o=>`${o.emoji} ${o.label} (${o.x}|${o.y})`).join(", ")
+      : "aucune";
+    P.innerHTML=secTitle("Manoir du héros")+
     `<div class="cost" style="opacity:.85">Le héros se gère dans l'onglet 🦸 Héros (attributs, objets, aventures, résurrection).</div>
      <button style="margin-top:6px" onclick="closeModal();showTab('hero')">🦸 Ouvrir l'onglet Héros</button>
-     <div class="cost" style="opacity:.6;margin-top:6px">Occupation d'oasis (rattacher son bonus) : à venir.</div>`; return; }
+     <div class="cost" style="margin-top:8px">🏞️ Oasis annexées : <b>${os.used}/${os.max}</b> — ${list}</div>
+     <div class="cost" style="opacity:.7;margin-top:4px">Niveaux 10/15/20 du manoir → 1/2/3 oasis. Annexe une oasis nettoyée (≤ 3 cases) depuis l'onglet 🗺️ Carte.</div>`; return; }
   P.innerHTML="";
 }
 
@@ -600,7 +606,10 @@ function renderMap(d){
         sub=t.village.name.slice(0,6);
       } else if(t.kind==="oasis"){ cls+=" oasis";
         main=`<span style="font-size:13px">${t.oasis.emoji||"🌿"}</span>`;
-        if(t.oasis.animals>0) sub="🐾"+t.oasis.animals; else sub="libre";
+        if(t.oasis.animals>0) sub="🐾"+t.oasis.animals;
+        else if(t.oasis.is_own_oasis) sub="★ à toi";
+        else if(t.oasis.owned) sub="occupée";
+        else sub="libre";
       } else { cls+=" valley"; main="<span style='opacity:.4'>·</span>"; }
       if(x===MAP_CX && y===MAP_CY) cls+=" center";
       h+=`<div class="${cls}" title="(${x}|${y})" onclick="openTile(${x},${y})">${main}<small>${sub}</small></div>`;
@@ -657,6 +666,38 @@ async function sendFromMap(){
     document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`; }
 }
 
+// Bloc « occupation d'oasis » (manoir du héros) dans la modale de carte.
+function occupationBox(o,x,y){
+  let h=`<div style="margin-top:10px;border-top:1px solid #5a4330;padding-top:8px">
+    <b>🏞️ Occupation de l'oasis</b>`;
+  if(o.owner){
+    if(o.owner.is_own) h+=`<div class="cost" style="margin-top:6px">Annexée par <b>${o.owner.name}</b>. Son bonus de production t'est crédité.</div>
+      <button style="margin-top:6px" onclick="abandonOasis(${o.owner.id},${x},${y})">🏳️ Abandonner l'oasis</button>`;
+    else h+=`<div class="cost" style="margin-top:6px;opacity:.85">Occupée par <b>${o.owner.name}</b> (autre joueur).</div>`;
+  } else if(o.total_animals>0){
+    h+=`<div class="cost" style="margin-top:6px;opacity:.75">Nettoie d'abord les animaux (razzia/attaque) avant de pouvoir l'annexer.</div>`;
+  } else if(o.eligible_villages && o.eligible_villages.length){
+    h+=`<div class="cost" style="margin-top:6px">Annexer depuis :</div>`;
+    for(const ev of o.eligible_villages)
+      h+=`<button style="margin-top:6px;margin-right:6px" onclick="occupyOasis(${ev.id},${x},${y})">🏞️ ${ev.name} (${ev.dist} case${ev.dist>1?"s":""}, ${ev.free_slots} libre${ev.free_slots>1?"s":""})</button>`;
+  } else {
+    h+=`<div class="cost" style="margin-top:6px;opacity:.7">Aucun de tes villages ne peut l'annexer : il faut un <b>manoir du héros niv 10+</b> avec un emplacement libre, à ≤ 3 cases de l'oasis.</div>`;
+  }
+  return h+`</div>`;
+}
+async function occupyOasis(vid,x,y){
+  const d=await post(`/api/village/${vid}/oasis/occupy`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify({x,y})},"modalMsg");
+  if(d){ closeModal(); loadMap(); if(CURRENT==vid) render(d.village);
+    document.getElementById("msg").textContent=`🏞️ Oasis ${d.oasis.label} annexée (${x}|${y})`; }
+}
+async function abandonOasis(vid,x,y){
+  const d=await post(`/api/village/${vid}/oasis/abandon`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify({x,y})},"modalMsg");
+  if(d){ closeModal(); loadMap(); if(CURRENT==vid) render(d.village);
+    document.getElementById("msg").textContent=`🏳️ Oasis (${x}|${y}) abandonnée`; }
+}
+
 let SETTLE_TARGET=null;
 async function loadSettleBox(x,y){
   const e=await (await fetch("/api/expansion")).json();
@@ -699,7 +740,7 @@ async function openTile(x,y){
     let h=`<div class="cost">Bonus de production : <b>${bonus}</b></div>
       <div class="cost" style="margin-top:6px">🐾 Animaux sauvages : ${animals}</div>`;
     if(o.total_animals>0) h+=attackForm();
-    else h+=`<div class="cost" style="margin-top:6px;opacity:.7">Oasis nettoyée. Occupation (bonus de prod) : à venir (phase expansion / héros).</div>`;
+    h+=occupationBox(o,x,y);
     L.innerHTML=h;
   } else { const f=t.valley.fields;
     T.textContent=`Vallée libre (${x}|${y})`;

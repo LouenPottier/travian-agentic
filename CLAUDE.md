@@ -123,8 +123,17 @@ Phase 3 en cours (livrée incrémentalement) :
   bonus/point, production/point, butin, objets) sont des **approximations documentées** en tête
   de `hero.py`/`items.py`. API `/api/hero[...]` ; UI : onglet 🦸 Héros (état, attributs,
   équipement/sac, aventures, résurrection) + cases « envoyer le héros » (rassemblement & carte).
-- ⬜ **Occupation d'oasis** : une fois les animaux nettoyés (déjà jouable), occuper l'oasis
-  (via manoir du héros) pour rattacher son bonus de prod à un village. Reste à faire.
+- ✅ **Occupation d'oasis** (`app/engine/oasis.py`, verrouillé par `tests/test_oasis.py`) :
+  une fois les animaux nettoyés, **annexer** une oasis à un village pour créditer son bonus
+  de prod (additif, % de la base, dans `village.gross_production`). Emplacements d'oasis =
+  **manoir du héros** niv 10/15/20 → 1/2/3 (`formulas.slots3`) ; oasis annexable seulement si
+  **nettoyée** (0 animal), **en portée** (Tchebychev ≤ `OASIS_RANGE`=3), **libre** (non déjà
+  occupée). Stockée sur `Village.oases` (+ colonne `tiles.owner_id`). API
+  `/api/village/{id}/oasis/occupy|abandon` ; UI : modale de case (carte) → « Annexer depuis
+  {village} » / « Abandonner », marqueur sur la grille, récap dans la modale du manoir. ⚠️
+  **Kirilloid ne modélise PAS l'occupation** → seuils de manoir et portée = approximations
+  documentées (`oasis.py`). ⬜ **Re-conquête** d'une oasis ennemie (vol entre joueurs) : non
+  modélisée, à faire.
 - ⬜ **Combat héros — affinages** : le héros n'est embarqué que depuis son village d'attache
   (pas de relais entre villages) ; pas encore de monture→cavalerie en combat, ni de prise en
   compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.
