@@ -96,11 +96,38 @@ Phase 3 en cours (livrée incrémentalement) :
   ⚠️ Pièges encore non pris en compte *dans la résolution de combat* (capture des assaillants) :
   construction + capacité seulement, à câbler. Grande caserne/écurie : modale = amélioration
   seule (remappage du producteur d'unités à faire).
-- ⬜ **Expansion 2ᵉ village** : points de culture (les bâtiments ont déjà `cp`/`culture_at`),
-  slots de résidence/palais (`residence_benefit`/`palace_benefit`), entraînement de colons
-  (déjà unités `is_settler`), fondation sur une vallée libre (réutiliser `layout_fields`).
+- ✅ **Expansion 2ᵉ village** (`app/engine/expansion.py`, verrouillé par `tests/test_expansion.py`) :
+  **points de culture** cumulés par *joueur* (table `players.culture`/`culture_at`, accumulation
+  paresseuse = somme des `culture_at` des bâtiments de tous ses villages, ×vitesse serveur),
+  **emplacements d'expansion** (résidence `slots2` niv 10/20, palais `slots3` niv 10/15/20,
+  cumulés), **entraînement de colons** (résidence, unités `is_settler` déjà existantes),
+  **envoi de 3 colons** sur une vallée libre (mouvement `kind="settle"`, `target_id` NULL) →
+  fondation à l'arrivée (`found_on_arrival`, colons consommés, nouveau village non-capitale via
+  `settled_village` qui réutilise `world.layout_fields`). ⚠️ **Kirilloid ne modélise PAS le
+  seuil de points** : `CULTURE_NEEDED` = approximation documentée (tables communautaires T4.6),
+  extrapolation cubique au-delà. API `/api/expansion` + `/api/village/{id}/settle` ; UI : modale
+  de vallée libre (carte) → « Fonder un village ici » si culture + slot dispo.
+- ✅ **Héros / aventures / objets** (`app/engine/hero.py`, `app/data/items.py`, verrouillé par
+  `tests/test_hero.py`) : **un héros par joueur** (table `heroes`, blob JSON). Santé 0..100
+  (régén paresseuse base+objets), **XP→niveau** (`xp_threshold`, 4 points/niveau), **attributs**
+  (force de combat, bonus att./déf. d'armée, production de ressources créditée au village
+  d'attache). **Combat** : le héros défend à la maison (force + bonus déf.) et peut accompagner
+  une attaque/razzia (`send(..., with_hero=True)`, drapeau `movements.hero`) ; il gagne de l'XP
+  (unités tuées), perd de la santé (pertes de son camp), meurt à 0 (résurrection au manoir du
+  héros : coût + délai). **Aventures** : apparaissent au fil du temps (table `adventures`,
+  `replenish_adventures`), le héros y part (durée = trajet), récompense **pré-tirée à l'envoi**
+  (XP, ressources, perte de santé, drop d'objet) appliquée au retour. **Objets** : 6 emplacements
+  d'équipement + consommables (soin), bonus cumulés dans `effective()`. Intégration combat via
+  champs neutres ajoutés à `combat.Off`/`combat.Place` (pas de régression `test_combat`). ⚠️
+  **Kirilloid ne modélise RIEN de tout cela** → toutes les valeurs (santé, XP, force/point,
+  bonus/point, production/point, butin, objets) sont des **approximations documentées** en tête
+  de `hero.py`/`items.py`. API `/api/hero[...]` ; UI : onglet 🦸 Héros (état, attributs,
+  équipement/sac, aventures, résurrection) + cases « envoyer le héros » (rassemblement & carte).
 - ⬜ **Occupation d'oasis** : une fois les animaux nettoyés (déjà jouable), occuper l'oasis
   (via manoir du héros) pour rattacher son bonus de prod à un village. Reste à faire.
+- ⬜ **Combat héros — affinages** : le héros n'est embarqué que depuis son village d'attache
+  (pas de relais entre villages) ; pas encore de monture→cavalerie en combat, ni de prise en
+  compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.
 
 Puis Phase 4 (API agents : schéma observation/action, bot scripté, puis agents LLM via le
 Claude Agent SDK).

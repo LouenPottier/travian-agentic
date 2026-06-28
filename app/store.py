@@ -124,15 +124,38 @@ def init_db() -> None:
             animals TEXT,                -- oasis: json[10] (garnison Nature) ; vallée: null
             PRIMARY KEY (x, y)
         );
+        -- Héros : un par joueur, état (santé, niveau, attributs, inventaire) en JSON.
+        CREATE TABLE IF NOT EXISTS heroes (
+            player_id INTEGER PRIMARY KEY,
+            data TEXT NOT NULL
+        );
+        -- Aventures disponibles d'un joueur (le héros y est envoyé puis revient).
+        CREATE TABLE IF NOT EXISTS adventures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL,
+            x INTEGER NOT NULL,
+            y INTEGER NOT NULL,
+            difficulty TEXT NOT NULL,    -- normal | hard
+            created_at REAL NOT NULL,
+            state TEXT NOT NULL DEFAULT 'available'  -- available | done
+        );
         """)
         # Migration douce des bases antérieures : colonnes ajoutées au fil des features
-        # (oasis : target_x/y avec target_id NULL ; commerce : merchants).
+        # (oasis : target_x/y avec target_id NULL ; commerce : merchants ; héros au
+        # combat : drapeau hero ; expansion : points de culture cumulés du joueur).
         for col in ("target_x INTEGER", "target_y INTEGER",
-                    "merchants INTEGER NOT NULL DEFAULT 0"):
+                    "merchants INTEGER NOT NULL DEFAULT 0",
+                    "hero INTEGER NOT NULL DEFAULT 0"):
             try:
                 c.execute(f"ALTER TABLE movements ADD COLUMN {col}")
             except sqlite3.OperationalError:
                 pass  # colonne déjà présente
+        for col in ("culture REAL NOT NULL DEFAULT 0",
+                    "culture_at REAL NOT NULL DEFAULT 0"):
+            try:
+                c.execute(f"ALTER TABLE players ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass
 
 
 # --- Cases du monde (carte) --------------------------------------------------
@@ -176,13 +199,14 @@ def update_tile_animals(x: int, y: int, animals: list[int]) -> None:
 
 
 def insert_movement(origin_id, target_id, owner_id, kind, phase, units, arrive_at,
-                    loot=(0, 0, 0, 0), target_x=None, target_y=None, merchants=0) -> int:
+                    loot=(0, 0, 0, 0), target_x=None, target_y=None, merchants=0,
+                    hero=0) -> int:
     with connect() as c:
         cur = c.execute(
             "INSERT INTO movements(origin_id,target_id,owner_id,kind,phase,units,loot,"
-            "arrive_at,target_x,target_y,merchants) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "arrive_at,target_x,target_y,merchants,hero) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (origin_id, target_id, owner_id, kind, phase, json.dumps(units),
-             json.dumps(list(loot)), arrive_at, target_x, target_y, merchants))
+             json.dumps(list(loot)), arrive_at, target_x, target_y, merchants, hero))
         return cur.lastrowid
 
 
@@ -240,6 +264,80 @@ def create_player(name: str, tribe: Tribe, is_npc: bool = False) -> int:
         cur = c.execute("INSERT INTO players(name, tribe, is_npc) VALUES (?,?,?)",
                         (name, int(tribe), int(is_npc)))
         return cur.lastrowid
+
+
+def get_player(player_id: int) -> dict | None:
+    with connect() as c:
+        row = c.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    return dict(row) if row else None
+
+
+# --- Points de culture (expansion) ------------------------------------------
+def get_culture(player_id: int) -> tuple[float, float]:
+    """(points cumulés, instant de dernière mise à jour) du joueur."""
+    with connect() as c:
+        row = c.execute("SELECT culture, culture_at FROM players WHERE id=?",
+                        (player_id,)).fetchone()
+    return (row["culture"], row["culture_at"]) if row else (0.0, 0.0)
+
+
+def set_culture(player_id: int, culture: float, culture_at: float) -> None:
+    with connect() as c:
+        c.execute("UPDATE players SET culture=?, culture_at=? WHERE id=?",
+                  (culture, culture_at, player_id))
+
+
+# --- Héros -------------------------------------------------------------------
+def get_hero_row(player_id: int) -> dict | None:
+    with connect() as c:
+        row = c.execute("SELECT data FROM heroes WHERE player_id=?",
+                        (player_id,)).fetchone()
+    return json.loads(row["data"]) if row else None
+
+
+def save_hero_row(player_id: int, data: dict) -> None:
+    with connect() as c:
+        c.execute("INSERT INTO heroes(player_id, data) VALUES (?,?) "
+                  "ON CONFLICT(player_id) DO UPDATE SET data=excluded.data",
+                  (player_id, json.dumps(data)))
+
+
+# --- Aventures ---------------------------------------------------------------
+def insert_adventure(player_id: int, x: int, y: int, difficulty: str,
+                     created_at: float) -> int:
+    with connect() as c:
+        cur = c.execute(
+            "INSERT INTO adventures(player_id,x,y,difficulty,created_at,state) "
+            "VALUES (?,?,?,?,?,'available')",
+            (player_id, x, y, difficulty, created_at))
+        return cur.lastrowid
+
+
+def adventures_for(player_id: int) -> list[dict]:
+    with connect() as c:
+        rows = c.execute(
+            "SELECT * FROM adventures WHERE player_id=? AND state='available' "
+            "ORDER BY created_at", (player_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_adventure(adventure_id: int) -> dict | None:
+    with connect() as c:
+        row = c.execute("SELECT * FROM adventures WHERE id=?",
+                        (adventure_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def count_adventures(player_id: int) -> int:
+    with connect() as c:
+        return c.execute("SELECT COUNT(*) AS n FROM adventures "
+                         "WHERE player_id=? AND state='available'",
+                         (player_id,)).fetchone()["n"]
+
+
+def mark_adventure_done(adventure_id: int) -> None:
+    with connect() as c:
+        c.execute("UPDATE adventures SET state='done' WHERE id=?", (adventure_id,))
 
 
 def insert_village(v: Village) -> Village:

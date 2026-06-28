@@ -52,6 +52,10 @@ class Off(Side):
     pop: int = 100
     kind: str = "attack"          # "attack" | "raid"
     targets: list[int] = field(default_factory=list)  # niveaux des bâtiments visés
+    # Héros accompagnant l'attaque (cf. engine.hero) : force de combat plate ajoutée
+    # à l'infanterie offensive, et bonus d'attaque (% multiplicatif). Défauts neutres.
+    hero_power: float = 0.0
+    bonus: float = 0.0            # bonus d'attaque du héros (fraction, ex. 0.20 = +20 %)
 
     def off_points(self) -> list[float]:
         """[points infanterie, points cavalerie] de l'attaque."""
@@ -62,6 +66,7 @@ class Off(Side):
                 inf += pts
             else:
                 cav += pts
+        inf += self.hero_power  # le héros combat comme de l'infanterie
         return [inf, cav]
 
     def _slot(self, predicate):
@@ -95,7 +100,8 @@ class Place:
     wall_level: int = 0
     wall_durability: float = 1.0
     wall_bonus: callable = lambda lvl: {"def_bonus": 0.0}  # buildings.wall4(...)
-    def_extra: float = 0.0          # défense plate additionnelle
+    def_extra: float = 0.0          # défense plate additionnelle (héros en défense inclus)
+    def_bonus_extra: float = 0.0    # bonus de défense multiplicatif (héros défenseur)
 
 
 @dataclass
@@ -200,11 +206,13 @@ def combat(place: Place, off: Off, defs: list[Defender]) -> CombatResult:
         def_total[1] += dp[1]
 
     base_off, base_def = adduced_def(off_pts, def_total)
+    base_off *= 1 + off.bonus  # bonus d'attaque du héros (neutre si 0)
     total_troops = off.total() + sum(d.total() for d in defs)
     imm = immensity(total_troops)
 
     def def_bonus():
-        return 1 + place.wall_bonus(place.wall_level).get("def_bonus", 0.0)
+        return ((1 + place.wall_bonus(place.wall_level).get("def_bonus", 0.0))
+                * (1 + place.def_bonus_extra))
 
     def def_absolute():
         return (BASE_VILLAGE_DEF + place.def_extra

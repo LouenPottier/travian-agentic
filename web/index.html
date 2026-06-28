@@ -65,6 +65,8 @@
   <nav id="tabs">
     <button id="tab_village" onclick="showTab('village')">🏰 Village</button>
     <button id="tab_map" class="ghost" onclick="showTab('map')">🗺️ Carte</button>
+    <button id="tab_hero" class="ghost" onclick="showTab('hero')">🦸 Héros
+      <span id="heroBadge" class="badge" style="display:none;background:#3a7"></span></button>
     <button id="tab_reports" class="ghost" onclick="showTab('reports')">📜 Rapports
       <span id="repBadge" class="badge" style="display:none"></span></button>
   </nav>
@@ -95,6 +97,10 @@
       ★ ton village · 🏠 autre joueur (clic → attaque) · 🌲🧱⛏️🌾 oasis selon son bonus
       (🐾 = animaux à vaincre, clic → attaque) · · vallée libre</div>
   </div>
+  <div id="heroView" style="display:none">
+    <h2>🦸 Héros</h2>
+    <div id="hero"></div>
+  </div>
   <div id="reportsView" style="display:none">
     <h2>Rapports</h2>
     <div id="reports"></div>
@@ -112,8 +118,8 @@
 const RICON = ["🪵","🧱","⛏️","🌾"];
 // Identifiants de bâtiments (mêmes valeurs que app/data/buildings.py:B).
 const Bk = {SMITHY:12, MAIN:14, RALLY:15, MARKET:16, EMBASSY:17, BARRACKS:18,
-  STABLES:19, WORKSHOP:20, ACADEMY:21, RESIDENCE:24, TRADE_OFFICE:27, TRAPPER:35,
-  GREAT_BARRACKS:28, GREAT_STABLES:29};
+  STABLES:19, WORKSHOP:20, ACADEMY:21, RESIDENCE:24, PALACE:25, TRADE_OFFICE:27, TRAPPER:35,
+  GREAT_BARRACKS:28, GREAT_STABLES:29, HERO_MANSION:36};
 const TRAIN_BUILDINGS = new Set([Bk.BARRACKS, Bk.STABLES, Bk.WORKSHOP, Bk.RESIDENCE]);
 const FIELD_COLOR = {0:"#3f6b3a",1:"#b5713a",2:"#707682",3:"#c8a82f"};
 const FIELD_ICON  = {0:"🌲",1:"🧱",2:"⛏️",3:"🌾"};
@@ -282,6 +288,10 @@ function renderPanel(s, P){
   if(bid===Bk.SMITHY)   return loadSmithyPanel(P);
   if(bid===Bk.TRAPPER)  return loadTrapperPanel(P);
   if(bid===Bk.EMBASSY){ P.innerHTML=secTitle("Ambassade")+`<div class="cost" style="opacity:.7">Diplomatie & alliances : à venir.</div>`; return; }
+  if(bid===Bk.HERO_MANSION){ P.innerHTML=secTitle("Manoir du héros")+
+    `<div class="cost" style="opacity:.85">Le héros se gère dans l'onglet 🦸 Héros (attributs, objets, aventures, résurrection).</div>
+     <button style="margin-top:6px" onclick="closeModal();showTab('hero')">🦸 Ouvrir l'onglet Héros</button>
+     <div class="cost" style="opacity:.6;margin-top:6px">Occupation d'oasis (rattacher son bonus) : à venir.</div>`; return; }
   P.innerHTML="";
 }
 
@@ -381,14 +391,19 @@ function renderRallyPanel(P){
         <option value="attack">Attaque</option><option value="reinforce">Renfort</option></select></div><div class="bldlist">`;
     for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
       <input id="send_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
-    h+=`</div><button style="margin-top:6px" onclick="sendArmy()">🚀 Envoyer</button>`;
+    h+=`</div>`;
+    if(v.hero_here && v.hero_here.available) h+=`<label class="cost" style="display:block;margin-top:6px">
+      <input type="checkbox" id="sendHero"> 🦸 Envoyer le héros (${v.hero_here.name}, ❤️${v.hero_here.health})
+      <span style="opacity:.6">— attaque/razzia uniquement</span></label>`;
+    h+=`<button style="margin-top:6px" onclick="sendArmy()">🚀 Envoyer</button>`;
   }
   P.innerHTML=h; restoreInputs(P,saved);
 }
 async function sendArmy(){
   const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("send_"+i); units[i]=el?(parseInt(el.value)||0):0; }
+  const hx=document.getElementById("sendHero");
   const body={target_id:+document.getElementById("sendTarget").value,
-    kind:document.getElementById("sendKind").value, units};
+    kind:document.getElementById("sendKind").value, units, with_hero:hx?hx.checked:false};
   const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
   if(d){ document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`;
@@ -467,6 +482,101 @@ function renderOverview(v){
   box.innerHTML=h+`</div>`;
 }
 
+// ----- Héros / aventures / objets -------------------------------------------
+let HERO=null;
+function bar(val,max,color){ const p=Math.max(0,Math.min(100,100*val/max));
+  return `<div style="background:#2a1d14;border-radius:4px;height:14px;overflow:hidden;border:1px solid #5a4330">
+    <div style="width:${p}%;height:100%;background:${color}"></div></div>`; }
+function fmtBonuses(b){ const L={strength:"force",off:"att. armée",def:"déf. armée",
+  regen:"régén./j",speed:"vitesse",production:"prod.",xp_bonus:"XP aventure",heal:"soin"};
+  return Object.entries(b).map(([k,v])=>{
+    const pct=(k==="off"||k==="def"||k==="xp_bonus"); const val=pct?`+${Math.round(v*100)} %`:`+${v}`;
+    return `${val} ${L[k]||k}`; }).join(" · "); }
+
+async function loadHero(){
+  const d=await (await fetch("/api/hero")).json();
+  if(d.detail){ document.getElementById("hero").innerHTML=`<div class="cost">${d.detail}</div>`; return; }
+  HERO=d; renderHero(d);
+}
+function renderHero(d){
+  const busy = d.status!=="home";
+  let h=`<div class="bldlist" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">`;
+  // Carte d'état
+  h+=`<div class="bld" style="text-align:left">
+    <div class="name">🦸 ${d.name} — niveau ${d.level}</div>
+    <div class="cost">❤️ Santé ${d.health}/100</div>${bar(d.health,100,"#c44")}
+    <div class="cost" style="margin-top:6px">⭐ XP ${d.experience} / ${d.xp_next}</div>
+    ${bar(d.experience-d.xp_this, d.xp_next-d.xp_this, "#caa15a")}
+    <div class="cost" style="margin-top:6px">Statut : <b>${
+      d.status==="home"?"au village":d.status==="adventure"?`en aventure (${fmtTimer(d.busy_in)})`:
+      d.status==="attacking"?"au combat":d.status==="dead"?"💀 mort":d.status}</b></div>
+    <div class="cost">🏠 ${d.home_village} · force ${d.effective.strength} · att +${d.effective.off_bonus}% · déf +${d.effective.def_bonus}%</div>
+    <div class="cost">régén ${d.effective.regen_per_day}/j · prod ${d.effective.production_per_hour}/h (${d.res_choice_label}) · vitesse ${d.effective.speed}</div>`;
+  if(d.status==="dead") h+=`<button onclick="reviveHero()">⚰️ Ressusciter (${fmtCost(d.revive_cost)})</button>`;
+  h+=`</div>`;
+  // Attributs
+  h+=`<div class="bld" style="text-align:left"><div class="name">Attributs (${d.points} pt dispo)</div>`;
+  const attrs=[["fight","Force de combat",d.attrs.fight],["off","Bonus d'attaque",d.attrs.off],
+    ["def","Bonus de défense",d.attrs.def],["res","Production",d.attrs.res]];
+  for(const [k,label,val] of attrs){
+    h+=`<div class="cost" style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin:3px 0">
+      <span>${label} : <b>${val}</b></span>`;
+    if(d.points>0) h+=`<span><input id="alloc_${k}" type="number" min="1" max="${d.points}" value="1" style="width:46px">
+      <button onclick="allocHero('${k}')">+</button></span>`;
+    h+=`</div>`;
+  }
+  h+=`<div class="cost" style="margin-top:6px">Ressource produite :
+    <select onchange="setResChoice(this.value)">
+      ${[["-1","réparti"],["0","bois"],["1","argile"],["2","fer"],["3","céréales"]].map(
+        ([v,l])=>`<option value="${v}" ${(+v)===d.res_choice?"selected":""}>${l}</option>`).join("")}
+    </select></div></div>`;
+  // Équipement
+  h+=`<div class="bld" style="text-align:left"><div class="name">Équipement</div>`;
+  for(const slot of ["head","body","right","left","shoes","horse"]){
+    const it=d.equipment[slot];
+    h+=`<div class="cost" style="display:flex;justify-content:space-between;gap:6px;margin:3px 0">
+      <span>${d.slots[slot]} : ${it?`${it.emoji} <b>${it.name}</b>`:"<i style='opacity:.5'>vide</i>"}</span>
+      ${it?`<button class="ghost" onclick="unequipHero('${slot}')">retirer</button>`:""}</div>`;
+    if(it) h+=`<div class="cost" style="opacity:.7;margin:-2px 0 4px">${fmtBonuses(it.bonuses)}</div>`;
+  }
+  h+=`</div>`;
+  document.getElementById("hero").innerHTML=h+`</div>`;
+  // Sac
+  let sh=`<h2 style="margin-top:18px">🎒 Sac</h2>`;
+  if(!d.bag.length) sh+=`<div class="cost" style="opacity:.6">Vide. Pars en aventure pour trouver des objets.</div>`;
+  else { sh+=`<div class="bldlist">`;
+    for(const it of d.bag){
+      sh+=`<div class="bld"><div class="name">${it.emoji} ${it.name} ${it.qty>1?`×${it.qty}`:""}</div>
+        <div class="cost" style="opacity:.8">${fmtBonuses(it.bonuses)}</div>`;
+      if(it.consumable) sh+=`<button onclick="useItem('${it.key}')">Utiliser</button>`;
+      else sh+=`<button onclick="equipItem('${it.key}')">Équiper (${it.slot_label})</button>`;
+      sh+=`</div>`; }
+    sh+=`</div>`; }
+  // Aventures
+  sh+=`<h2 style="margin-top:18px">🗺️ Aventures disponibles</h2>`;
+  if(busy) sh+=`<div class="cost" style="opacity:.7">Le héros est occupé (${d.status==="adventure"?fmtTimer(d.busy_in):d.status}).</div>`;
+  else if(!d.adventures.length) sh+=`<div class="cost" style="opacity:.6">Aucune aventure pour l'instant (elles apparaissent au fil du temps).</div>`;
+  else { sh+=`<div class="bldlist">`;
+    for(const a of d.adventures){
+      sh+=`<div class="bld"><div class="name">${a.difficulty==="hard"?"🔥 Difficile":"Normale"}</div>
+        <div class="cost">📍 (${a.x}|${a.y})</div>
+        <button onclick="goAdventure(${a.id})">Partir</button></div>`; }
+    sh+=`</div>`; }
+  document.getElementById("hero").innerHTML+=sh;
+}
+async function heroPost(url){ const d=await post(url,null,"msg");
+  if(d){ HERO=d.hero; renderHero(d.hero); load(); } return d; }
+function allocHero(k){ const n=Math.max(1,parseInt(document.getElementById("alloc_"+k).value)||1);
+  heroPost(`/api/hero/allocate/${k}/${n}`); }
+function setResChoice(v){ heroPost(`/api/hero/res_choice/${v}`); }
+function equipItem(key){ heroPost(`/api/hero/equip/${key}`); }
+function unequipHero(slot){ heroPost(`/api/hero/unequip/${slot}`); }
+function useItem(key){ heroPost(`/api/hero/use/${key}`); }
+function reviveHero(){ heroPost(`/api/hero/revive`); }
+async function goAdventure(id){ const d=await post(`/api/hero/adventure/${id}`,null,"msg");
+  if(d){ HERO=d.hero; renderHero(d.hero);
+    document.getElementById("msg").textContent=`🗺️ Héros parti en aventure — retour dans ${d.arrive_in}s`; } }
+
 // ----- Carte du monde --------------------------------------------------------
 let MAP_CX=0, MAP_CY=0, MAP_R=7, MAP_WR=20;
 const clampWR = v => Math.max(-MAP_WR, Math.min(MAP_WR, v));
@@ -520,6 +630,7 @@ function attackForm(){
   if(!troops.length)
     return `<div class="cost" style="margin-top:8px;opacity:.85">Aucune troupe disponible dans ${LAST.name}.</div>`;
   const allowReinforce = MAP_TARGET && MAP_TARGET.target_id!=null;
+  const heroAv = LAST.hero_here && LAST.hero_here.available;
   let h=`<div style="margin-top:10px;border-top:1px solid #5a4330;padding-top:8px">
     <b>🚀 Envoyer depuis ${LAST.name}</b>
     <div style="margin:6px 0">Type : <select id="mapKind">
@@ -528,19 +639,43 @@ function attackForm(){
     <div class="bldlist">`;
   for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
     <input id="mapunit_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
-  h+=`</div><button style="margin-top:8px" onclick="sendFromMap()">🚀 Envoyer</button></div>`;
+  h+=`</div>`;
+  if(heroAv) h+=`<label class="cost" style="display:block;margin-top:6px">
+    <input type="checkbox" id="mapHero"> 🦸 Envoyer le héros (${LAST.hero_here.name}, ❤️${LAST.hero_here.health})</label>`;
+  h+=`<button style="margin-top:8px" onclick="sendFromMap()">🚀 Envoyer</button></div>`;
   return h;
 }
 async function sendFromMap(){
   const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("mapunit_"+i);
     units[i]=el?(parseInt(el.value)||0):0; }
-  const body={kind:document.getElementById("mapKind").value, units, ...MAP_TARGET};
+  const hx=document.getElementById("mapHero");
+  const body={kind:document.getElementById("mapKind").value, units,
+    with_hero:hx?hx.checked:false, ...MAP_TARGET};
   const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
   if(d){ closeModal(); loadMap(); loadReports();
     document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`; }
 }
 
+let SETTLE_TARGET=null;
+async function loadSettleBox(x,y){
+  const e=await (await fetch("/api/expansion")).json();
+  const box=document.getElementById("settleBox"); if(!box) return;
+  if(!LAST || !LAST.is_own){ box.innerHTML="Sélectionne un de tes villages pour fonder ici."; return; }
+  let h=`📜 Culture : <b>${e.culture}</b>/${e.culture_needed} (village ${e.next_village}) · `+
+        `emplacements libres : <b>${e.slots_free}</b>/${e.slots_total} · +${e.culture_per_day}/j<br>`;
+  if(e.slots_free<=0) h+=`<span style="opacity:.8">Construis/améliore une résidence (niv 10) ou un palais pour débloquer un emplacement.</span>`;
+  else if(e.culture<e.culture_needed) h+=`<span style="opacity:.8">Pas encore assez de points de culture.</span>`;
+  else h+=`<button onclick="settleHere()">🏕️ Fonder un village ici (3 colons)</button>`;
+  box.innerHTML=h; box.style.opacity=1;
+}
+async function settleHere(){
+  if(!SETTLE_TARGET) return;
+  const d=await post(`/api/village/${CURRENT}/settle`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(SETTLE_TARGET)},"modalMsg");
+  if(d){ closeModal(); loadMap(); loadReports(); render(d.village);
+    document.getElementById("msg").textContent=`🏕️ Colons en route — fondation dans ${d.arrive_in}s`; }
+}
 async function openTile(x,y){
   const t=await (await fetch(`/api/tile/${x}/${y}`)).json();
   const T=document.getElementById("modalTitle"), L=document.getElementById("modalList");
@@ -568,9 +703,12 @@ async function openTile(x,y){
     L.innerHTML=h;
   } else { const f=t.valley.fields;
     T.textContent=`Vallée libre (${x}|${y})`;
-    L.innerHTML=`<div class="cost">Distribution des champs : <b>${t.valley.layout}</b></div>
-      <div class="cost" style="margin-top:6px">🌲 ${f.bois} · 🧱 ${f.argile} · ⛏️ ${f.fer} · 🌾 ${f["céréales"]}</div>
-      <div class="cost" style="margin-top:6px;opacity:.7">Fonder un village ici : à venir (phase expansion).</div>`;
+    SETTLE_TARGET={x,y};
+    let h=`<div class="cost">Distribution des champs : <b>${t.valley.layout}</b></div>
+      <div class="cost" style="margin-top:6px">🌲 ${f.bois} · 🧱 ${f.argile} · ⛏️ ${f.fer} · 🌾 ${f["céréales"]}</div>`;
+    h+=`<div id="settleBox" class="cost" style="margin-top:8px;opacity:.7">Chargement de l'expansion…</div>`;
+    L.innerHTML=h;
+    loadSettleBox(x,y);
   }
   document.getElementById("modal").style.display="flex";
 }
@@ -579,11 +717,14 @@ let TAB="village", LAST_SEEN_T=0;
 function showTab(name){ TAB=name;
   document.getElementById("villageView").style.display = name==="village"?"":"none";
   document.getElementById("mapView").style.display = name==="map"?"":"none";
+  document.getElementById("heroView").style.display = name==="hero"?"":"none";
   document.getElementById("reportsView").style.display = name==="reports"?"":"none";
   document.getElementById("tab_village").className = name==="village"?"":"ghost";
   document.getElementById("tab_map").className = name==="map"?"":"ghost";
+  document.getElementById("tab_hero").className = name==="hero"?"":"ghost";
   document.getElementById("tab_reports").className = name==="reports"?"":"ghost";
   if(name==="reports") loadReports();
+  if(name==="hero") loadHero();
   if(name==="map"){ if(!MAP_LOADED){ centerOnVillage(); MAP_LOADED=true; } else loadMap(); }
 }
 let MAP_LOADED=false;
@@ -596,9 +737,11 @@ async function loadReports(){
   const reps=d.reports;
   const box=document.getElementById("reports");
   box.innerHTML=reps.length ? reps.map(r=>{ const b=r.body; let line="";
-    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`;
-    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`;
-    else if(b.type==="oasis") line=`pertes ${b.pertes_pct}%${b.cleared?" · 🎉 oasis nettoyée":" · animaux restants"}`;
+    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"");
+    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(b.hero_def?" · 🦸 héros en défense":"");
+    else if(b.type==="oasis") line=`pertes ${b.pertes_pct}%${b.cleared?" · 🎉 oasis nettoyée":" · animaux restants"}`+(b.hero?` · 🦸${b.hero_alive?"":" 💀"}`:"");
+    else if(b.type==="adventure") line=`⭐ +${b.xp} XP · 🪵${b.resources[0]} 🧱${b.resources[1]} ⛏️${b.resources[2]} 🌾${b.resources[3]} · ❤️−${b.health_loss}`+(b.item?` · 🎁 ${b.item}`:"")+(b.died?" · 💀 mort":"");
+    else if(b.type==="settle") line=b.ok?`🏕️ ${b.name} fondé en (${b.coords[0]}|${b.coords[1]})`:`fondation impossible (${b.coords[0]}|${b.coords[1]})`;
     else line="renfort";
     return `<div class="bld" style="text-align:left;margin-bottom:6px">
       <b>${r.title}</b> <small style="opacity:.55">${fmtDate(r.created_at)}</small>
@@ -611,7 +754,20 @@ async function loadReports(){
   badge.textContent=n; badge.style.display=n?"inline-block":"none";
 }
 
+async function updateHeroBadge(){
+  try{ const d=await (await fetch("/api/hero")).json(); if(d.detail) return;
+    const badge=document.getElementById("heroBadge");
+    // Badge = aventures dispo (si héros au village) ou ⚔️/💀 selon le statut.
+    let txt="";
+    if(d.status==="dead") txt="💀";
+    else if(d.status==="home" && d.adventures.length) txt=String(d.adventures.length);
+    else if(d.points>0) txt="+";
+    badge.textContent=txt; badge.style.display=txt?"inline-block":"none";
+    if(TAB==="hero") renderHero(d);
+  }catch(e){}
+}
 setInterval(load,4000); setInterval(loadReports,6000);
+setInterval(updateHeroBadge,7000);
 setInterval(()=>{ if(TAB==="map" && MAP_LOADED) loadMap(); }, 5000);
 // Décompte live de la file de construction ; recharge dès qu'un ordre se termine.
 setInterval(()=>{ if(!ACTIVE_BUILDS.length) return;
@@ -619,7 +775,7 @@ setInterval(()=>{ if(!ACTIVE_BUILDS.length) return;
   if(ACTIVE_BUILDS.some(b=>b.end-now<=0)){ ACTIVE_BUILDS=[]; load(); }
   else renderBuilds();
 }, 1000);
-init().then(loadReports);
+init().then(loadReports).then(updateHeroBadge);
 </script>
 </body>
 </html>

@@ -114,12 +114,15 @@ def send_resources(origin_id: int, target_id: int, player_id: int,
 
 def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
          units: list[int], now: float | None = None,
-         target_x: int | None = None, target_y: int | None = None) -> dict:
+         target_x: int | None = None, target_y: int | None = None,
+         with_hero: bool = False) -> dict:
     """Envoie une armée vers un village (`target_id`) **ou** une oasis (`target_x/y`).
 
     Cible village : `target_id` renseigné. Cible oasis : `target_id=None` et
     coordonnées de la case (qui doit être une oasis ; on n'attaque pas une vallée
     vide). Les oasis ne peuvent recevoir que des razzias/attaques, pas de renfort.
+    `with_hero` : envoie aussi le héros (s'il est présent dans ce village), pour les
+    attaques/razzias uniquement.
     """
     now = now or _time.time()
     origin = store.load_village(origin_id)
@@ -127,8 +130,25 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
         raise MoveError("Village introuvable.")
     if origin.player_id != player_id:
         raise MoveError("Ce village ne t'appartient pas.")
-    if sum(units) <= 0:
+    if sum(units) <= 0 and not with_hero:
         raise MoveError("Aucune troupe sélectionnée.")
+
+    # Héros : on ne l'embarque que sur une attaque/razzia, depuis son village
+    # d'attache, s'il est disponible et en bonne santé.
+    from app.engine import hero as H
+    hero_flag = 0
+    if with_hero:
+        if kind not in ("attack", "raid"):
+            raise MoveError("Le héros n'accompagne que les attaques et razzias.")
+        h = H.load(player_id)
+        if h is None or h.home_village_id != origin_id:
+            raise MoveError("Pas de héros dans ce village.")
+        H.tick(h, origin, now)
+        if h.status != "home" or h.health <= 0:
+            raise MoveError("Le héros n'est pas disponible.")
+        h.status = "attacking"
+        H.save(h)
+        hero_flag = 1
 
     if target_id is not None:
         target = store.load_village(target_id)
@@ -162,7 +182,8 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
                           origin.tribe, units, origin.server_speed)
     arrive_at = now + secs
     mid = store.insert_movement(origin_id, target_id, player_id, kind, "outbound",
-                                units, arrive_at, target_x=tx, target_y=ty)
+                                units, arrive_at, target_x=tx, target_y=ty,
+                                hero=hero_flag)
     return {"id": mid, "arrive_in": round(secs)}
 
 
@@ -176,13 +197,31 @@ def _build_place(target: V.Village) -> C.Place:
                    wall_level=wall_level, wall_bonus=wall_bonus)
 
 
-def _resolve_battle(origin, target, units, kind, now):
-    """Résout un combat à l'arrivée et renvoie (survivants, butin)."""
+def _resolve_battle(origin, target, units, kind, now, att_hero=None):
+    """Résout un combat à l'arrivée et renvoie (survivants, butin, hero_alive).
+
+    `att_hero` : héros de l'attaquant (Hero) s'il accompagne l'armée. Le héros du
+    défenseur (présent dans la cible) est chargé et renforce la défense.
+    """
+    from app.engine import hero as H
     off = C.Off(units=UNITS[origin.tribe], numbers=list(units),
                 upgrades=list(origin.upgrades), pop=V.population(origin), kind=kind)
+    if att_hero is not None:
+        off.hero_power = H.combat_power(att_hero)
+        off.bonus = H.effective(att_hero)["off_bonus"]
     deff = C.Defender(units=UNITS[target.tribe], numbers=list(target.troops),
                       upgrades=list(target.upgrades))
     place = _build_place(target)
+
+    # Héros défenseur : présent et vivant dans la cible.
+    def_hero = H.load(target.player_id)
+    if def_hero is not None and (def_hero.home_village_id != target.id
+                                 or def_hero.status != "home" or def_hero.health <= 0):
+        def_hero = None
+    if def_hero is not None:
+        place.def_extra += H.combat_power(def_hero)
+        place.def_bonus_extra = H.effective(def_hero)["def_bonus"]
+
     res = C.combat(place, off, [deff])
 
     survivors = [round(units[i] * (1 - res.off_losses)) for i in range(10)]
@@ -200,28 +239,45 @@ def _resolve_battle(origin, target, units, kind, now):
             target.resources[i] = max(0.0, target.resources[i] - loot[i])
     store.save_village(target)
 
+    # Héros : XP (unités ennemies tuées) + perte de santé (pertes de son camp).
+    hero_alive = True
+    att_killed = sum(units[i] - survivors[i] for i in range(10))
+    def_killed = sum(def_before[i] - target.troops[i] for i in range(10))
+    if att_hero is not None:
+        hero_alive = not H.apply_combat(att_hero, res.off_losses, def_killed, now)
+        H.save(att_hero)
+    if def_hero is not None:
+        H.apply_combat(def_hero, res.def_losses, att_killed, now)
+        H.save(def_hero)
+
     # Rapports
     store.add_report(origin.player_id, now, f"⚔️ Attaque sur {target.name}", {
         "type": "offensive", "cible": target.name, "kind": kind,
         "envoyees": list(units), "survivantes": survivors,
-        "pertes_pct": round(res.off_losses * 100), "butin": loot})
+        "pertes_pct": round(res.off_losses * 100), "butin": loot,
+        "hero": att_hero is not None, "hero_alive": hero_alive})
     store.add_report(target.player_id, now, f"🛡️ Défense de {target.name}", {
         "type": "defensive", "attaquant": origin.name, "kind": kind,
         "def_avant": def_before, "def_apres": target.troops,
-        "pertes_pct": round(res.def_losses * 100), "butin_pille": loot})
-    return survivors, loot
+        "pertes_pct": round(res.def_losses * 100), "butin_pille": loot,
+        "hero_def": def_hero is not None})
+    return survivors, loot, hero_alive
 
 
-def _resolve_oasis(origin, tile, units, kind, now):
+def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
     """Combat à l'arrivée sur une oasis : troupes du joueur vs animaux (Nature).
 
     Pas de butin (les oasis ne stockent aucune ressource) ; on réduit la garnison
     d'animaux survivants. Place.pop = pop de l'attaquant pour neutraliser le bonus
-    de moral (pas d'avantage « gros village » face aux animaux). Renvoie les
-    survivants offensifs."""
+    de moral (pas d'avantage « gros village » face aux animaux). Renvoie
+    (survivants offensifs, hero_alive)."""
+    from app.engine import hero as H
     animals = tile["animals"] or [0] * 10
     off = C.Off(units=UNITS[origin.tribe], numbers=list(units),
                 upgrades=list(origin.upgrades), pop=V.population(origin), kind=kind)
+    if att_hero is not None:
+        off.hero_power = H.combat_power(att_hero)
+        off.bonus = H.effective(att_hero)["off_bonus"]
     deff = C.Defender(units=UNITS[Tribe.NATURE], numbers=list(animals), upgrades=[0] * 10)
     place = C.Place(tribe=int(Tribe.NATURE), pop=off.pop, wall_level=0)
     res = C.combat(place, off, [deff])
@@ -229,6 +285,12 @@ def _resolve_oasis(origin, tile, units, kind, now):
     survivors = [round(units[i] * (1 - res.off_losses)) for i in range(10)]
     animals_after = [round(animals[i] * (1 - res.def_losses)) for i in range(10)]
     store.update_tile_animals(tile["x"], tile["y"], animals_after)
+
+    hero_alive = True
+    if att_hero is not None:
+        killed = sum(animals[i] - animals_after[i] for i in range(10))
+        hero_alive = not H.apply_combat(att_hero, res.off_losses, killed, now)
+        H.save(att_hero)
 
     label = W.oasis_label(tile["layout"])
     store.add_report(origin.player_id, now,
@@ -239,8 +301,9 @@ def _resolve_oasis(origin, tile, units, kind, now):
                          "pertes_pct": round(res.off_losses * 100),
                          "animaux_avant": W.animal_breakdown(animals),
                          "animaux_apres": W.animal_breakdown(animals_after),
-                         "cleared": sum(animals_after) == 0})
-    return survivors
+                         "cleared": sum(animals_after) == 0,
+                         "hero": att_hero is not None, "hero_alive": hero_alive})
+    return survivors, hero_alive
 
 
 # FastAPI exécute les endpoints synchrones dans un pool de threads : deux requêtes
@@ -277,6 +340,21 @@ def _process_due_locked(now: float) -> int:
             for i in range(4):
                 origin.resources[i] = min(caps[i], origin.resources[i] + loot[i])
             store.save_village(origin)
+            # Le héros rentre à la maison (s'il accompagnait ce mouvement).
+            if m["hero"]:
+                from app.engine import hero as H
+                h = H.load(m["owner_id"])
+                if h is not None and h.status == "attacking":
+                    h.status = "home"
+                    h.busy_until = 0.0
+                    H.save(h)
+            store.delete_movement(m["id"])
+            continue
+
+        if m["kind"] == "settle":
+            # Arrivée de colons : fondation d'un nouveau village sur la vallée cible.
+            from app.engine import expansion as EXP
+            EXP.found_on_arrival(m, now)
             store.delete_movement(m["id"])
             continue
 
@@ -322,13 +400,17 @@ def _process_due_locked(now: float) -> int:
             continue
 
         # attack / raid — cible village (target_id) ou oasis (coordonnées seules)
+        from app.engine import hero as H
+        att_hero = H.load(m["owner_id"]) if m["hero"] else None
         loot = (0, 0, 0, 0)
         if m["target_id"] is not None:
             V.tick(target, now)
-            survivors, loot = _resolve_battle(origin, target, units, m["kind"], now)
+            survivors, loot, hero_alive = _resolve_battle(
+                origin, target, units, m["kind"], now, att_hero)
         else:
             tile = store.get_tile(m["target_x"], m["target_y"])
-            survivors = _resolve_oasis(origin, tile, units, m["kind"], now)
+            survivors, hero_alive = _resolve_oasis(
+                origin, tile, units, m["kind"], now, att_hero)
         # Les pertes au combat quittent définitivement les effectifs en vol de
         # l'origine ; les survivants y restent jusqu'à leur retour.
         V.tick(origin, now)
@@ -336,11 +418,16 @@ def _process_due_locked(now: float) -> int:
             origin.away[i] = max(0, origin.away[i] - (units[i] - survivors[i]))
         store.save_village(origin)
         store.delete_movement(m["id"])
-        if sum(survivors) > 0:
+        # Le héros mort ne revient pas (status déjà passé à "dead" par apply_combat).
+        hero_back = 1 if (att_hero is not None and hero_alive) else 0
+        if sum(survivors) > 0 or hero_back:
             # Retour depuis le lieu du combat (coordonnées de la cible) vers l'origine.
+            # Si seul le héros survit, le trajet retour suit sa propre vitesse.
+            ret_units = survivors if sum(survivors) > 0 else units
             secs = travel_seconds(m["target_x"], m["target_y"], origin.x, origin.y,
-                                  origin.tribe, survivors, origin.server_speed)
+                                  origin.tribe, ret_units, origin.server_speed)
             store.insert_movement(m["origin_id"], m["target_id"], m["owner_id"],
                                   m["kind"], "back", survivors, now + secs, loot,
-                                  target_x=m["target_x"], target_y=m["target_y"])
+                                  target_x=m["target_x"], target_y=m["target_y"],
+                                  hero=hero_back)
     return count
