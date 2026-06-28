@@ -74,10 +74,9 @@
     <div class="board" id="fields"></div>
     <h2 style="margin-top:20px">Centre du village</h2>
     <div class="board" id="center" style="background:linear-gradient(#6b5436,#4a3a26)"></div>
-    <h2 style="margin-top:20px">Armée</h2>
-    <div id="army"></div>
-    <h2 style="margin-top:20px">Place de marché</h2>
-    <div id="market"></div>
+    <div class="cost" style="opacity:.65;margin-top:6px">💡 Clique un bâtiment pour l'améliorer et utiliser sa fonction (caserne → entraînement, marché → commerce, académie → recherche, forge → améliorations, trappeur → pièges…).</div>
+    <h2 style="margin-top:20px">Armée &amp; mouvements</h2>
+    <div id="overview"></div>
   </div>
   <div id="mapView" style="display:none">
     <h2>Carte du monde</h2>
@@ -102,13 +101,20 @@
   </div>
 </main>
 <div id="modal" onclick="if(event.target.id==='modal')closeModal()">
-  <div class="box"><h3 id="modalTitle"></h3><div id="modalList"></div>
+  <div class="box"><h3 id="modalTitle"></h3>
+    <div id="modalList"></div>
+    <div id="modalPanel"></div>
     <div id="modalMsg"></div>
     <button class="ghost" onclick="closeModal()">Fermer</button></div>
 </div>
 
 <script>
 const RICON = ["🪵","🧱","⛏️","🌾"];
+// Identifiants de bâtiments (mêmes valeurs que app/data/buildings.py:B).
+const Bk = {SMITHY:12, MAIN:14, RALLY:15, MARKET:16, EMBASSY:17, BARRACKS:18,
+  STABLES:19, WORKSHOP:20, ACADEMY:21, RESIDENCE:24, TRADE_OFFICE:27, TRAPPER:35,
+  GREAT_BARRACKS:28, GREAT_STABLES:29};
+const TRAIN_BUILDINGS = new Set([Bk.BARRACKS, Bk.STABLES, Bk.WORKSHOP, Bk.RESIDENCE]);
 const FIELD_COLOR = {0:"#3f6b3a",1:"#b5713a",2:"#707682",3:"#c8a82f"};
 const FIELD_ICON  = {0:"🌲",1:"🧱",2:"⛏️",3:"🌾"};
 const BICON = {4:"🪚",5:"🧱",6:"🔥",7:"🌀",8:"🍞",9:"📦",10:"🥖",12:"🔨",13:"🏟️",14:"🏛️",
@@ -213,8 +219,8 @@ function render(v){
     .map(s=>({label:`${s.name} → niveau ${s.target_level}`, end:Date.now()/1000 + s.finish_in}));
   renderBuilds();
 
-  renderArmy(v);
-  renderMarket(v);
+  renderOverview(v);
+  if(MODAL_SLOT!=null && document.getElementById("modal").style.display==="flex") refreshModal();
 }
 
 let ACTIVE_BUILDS=[];
@@ -227,144 +233,238 @@ function renderBuilds(){
       `<span class="timer">${fmtTimer(b.end-now)}</span></div>`).join("")+`</div>`;
 }
 
+// ---- Modale de bâtiment : amélioration + effet + panneau fonctionnel --------
+let MODAL_SLOT=null, MODAL_MARKET=null;
+function secTitle(t){ return `<div style="margin:12px 0 6px;border-top:1px solid #5a4330;padding-top:8px"><b>${t}</b></div>`; }
+function grabInputs(P){ const s={}; P.querySelectorAll("input,select").forEach(el=>{ if(el.id) s[el.id]=el.value; }); return s; }
+function restoreInputs(P,saved){ P.querySelectorAll("input,select").forEach(el=>{ if(el.id&&saved[el.id]!=null) el.value=saved[el.id]; }); }
+
 function openSlot(idx){
-  const s=SLOTMAP[idx]; if(!s) return;
-  document.getElementById("modalMsg").textContent="";
-  const T=document.getElementById("modalTitle"), L=document.getElementById("modalList");
-  if(s.empty){
-    T.textContent=`Construire — emplacement ${idx}`;
-    L.innerHTML=(s.buildable&&s.buildable.length)? s.buildable.map(b=>
-      `<div class="opt"><span><b>${b.name}</b><div class="cost">${fmtCost(b.cost)} · ⏱️ ${fmtTimer(b.time)}</div></span>
-       ${LAST.is_own?`<button onclick="construct(${idx},${b.id})">Construire</button>`:""}</div>`).join("")
-      : `<div class="cost">Rien à construire ici (prérequis non remplis).</div>`;
-  } else {
-    T.textContent=`${s.name} — niveau ${s.level}`;
-    let body="";
-    if(s.finish_in!=null) body=`<div class="cost">⏳ amélioration → ${s.target_level} (${fmtTimer(s.finish_in)})</div>`;
-    else if(s.next_cost==null) body=`<div class="cost">Niveau maximum atteint.</div>`;
-    else { body=`<div class="cost">Niveau ${s.level+1} : ${fmtCost(s.next_cost)} · ⏱️ ${fmtTimer(s.next_time)}</div>`;
-      if(LAST.is_own) body+=`<button onclick="build(${idx})">Améliorer → ${s.level+1}</button>`; }
-    L.innerHTML=body;
-  }
+  MODAL_SLOT=idx; document.getElementById("modalMsg").textContent="";
+  buildModal(SLOTMAP[idx]);
   document.getElementById("modal").style.display="flex";
 }
-function closeModal(){ document.getElementById("modal").style.display="none"; }
+function refreshModal(){ const s=SLOTMAP[MODAL_SLOT];
+  if(!s){ closeModal(); return; } buildModal(s); }
+function closeModal(){ MODAL_SLOT=null;
+  document.getElementById("modal").style.display="none"; }
+
+function buildModal(s){
+  const T=document.getElementById("modalTitle"), L=document.getElementById("modalList"),
+        P=document.getElementById("modalPanel");
+  if(s.empty){
+    T.textContent=`Construire — emplacement ${s.index}`;
+    L.innerHTML=(s.buildable&&s.buildable.length)? s.buildable.map(b=>
+      `<div class="opt"><span><b>${b.name}</b><div class="cost">${fmtCost(b.cost)} · ⏱️ ${fmtTimer(b.time)}</div></span>
+       ${LAST.is_own?`<button onclick="construct(${s.index},${b.id})">Construire</button>`:""}</div>`).join("")
+      : `<div class="cost">Rien à construire ici (prérequis non remplis).</div>`;
+    P.innerHTML=""; return;
+  }
+  T.textContent=`${s.name} — niveau ${s.level}`;
+  let body=`<div class="cost" style="opacity:.95">🔎 ${s.effect||""}`;
+  if(s.next_effect) body+=` <span style="opacity:.65">— niv ${s.level+1} : ${s.next_effect}</span>`;
+  body+=`</div>`;
+  if(s.finish_in!=null) body+=`<div class="cost">⏳ amélioration → ${s.target_level} (${fmtTimer(s.finish_in)})</div>`;
+  else if(s.next_cost==null) body+=`<div class="cost">Niveau maximum atteint.</div>`;
+  else { body+=`<div class="cost">Améliorer → niv ${s.level+1} : ${fmtCost(s.next_cost)} · ⏱️ ${fmtTimer(s.next_time)}</div>`;
+    if(LAST.is_own) body+=`<button onclick="build(${s.index})">Améliorer → ${s.level+1}</button>`; }
+  L.innerHTML=body;
+  renderPanel(s, P);
+}
+
+function renderPanel(s, P){
+  if(!LAST.is_own){ P.innerHTML=""; return; }
+  const bid=s.building_id;
+  if(TRAIN_BUILDINGS.has(bid)) return renderTrainPanel(s,P);
+  if(bid===Bk.MARKET)   return loadMarketPanel(P);
+  if(bid===Bk.RALLY)    return renderRallyPanel(P);
+  if(bid===Bk.ACADEMY)  return loadAcademyPanel(P);
+  if(bid===Bk.SMITHY)   return loadSmithyPanel(P);
+  if(bid===Bk.TRAPPER)  return loadTrapperPanel(P);
+  if(bid===Bk.EMBASSY){ P.innerHTML=secTitle("Ambassade")+`<div class="cost" style="opacity:.7">Diplomatie & alliances : à venir.</div>`; return; }
+  P.innerHTML="";
+}
 
 async function post(url,opt,errId){ const msg=document.getElementById(errId||"msg"); msg.textContent="";
   const r=await fetch(url,opt||{method:"POST"});
   if(!r.ok){ const e=await r.json(); msg.textContent="⚠️ "+e.detail; return null; }
   return await r.json(); }
 async function build(idx){ const d=await post(`/api/village/${CURRENT}/build/${idx}`,null,"modalMsg");
-  if(d){ closeModal(); render(d.village); } }
+  if(d) render(d.village); }
 async function construct(idx,id){ const d=await post(`/api/village/${CURRENT}/construct/${idx}/${id}`,null,"modalMsg");
-  if(d){ closeModal(); render(d.village); } }
+  if(d) render(d.village); }
 async function train(bid,idx){ const q=Math.max(1,parseInt(document.getElementById(`q_${bid}_${idx}`).value)||1);
-  const d=await post(`/api/village/${CURRENT}/train/${bid}/${idx}/${q}`); if(d) render(d.village); }
+  const d=await post(`/api/village/${CURRENT}/train/${bid}/${idx}/${q}`,null,"modalMsg"); if(d) render(d.village); }
+async function research(i){ const d=await post(`/api/village/${CURRENT}/research/${i}`,null,"modalMsg"); if(d) render(d.village); }
+async function upgradeUnit(i){ const d=await post(`/api/village/${CURRENT}/upgrade/${i}`,null,"modalMsg"); if(d) render(d.village); }
+async function buildTraps(){ const n=Math.max(1,parseInt(document.getElementById("trapN").value)||1);
+  const d=await post(`/api/village/${CURRENT}/traps/${n}`,null,"modalMsg"); if(d) render(d.village); }
 
-async function sendArmy(){
-  const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("send_"+i);
-    units[i]=el?(parseInt(el.value)||0):0; }
-  const body={target_id:+document.getElementById("sendTarget").value,
-    kind:document.getElementById("sendKind").value, units};
-  const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
-    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  if(d){ document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`;
-    render(d.village); loadReports(); }
-}
-
-function renderArmy(v){
-  const army=document.getElementById("army");
-  // Le rafraîchissement périodique (setInterval load) reconstruit ce bloc : on
-  // mémorise les valeurs saisies (quantités d'entraînement/envoi, cible, type)
-  // pour ne pas les remettre à zéro pendant que l'utilisateur les remplit.
-  const saved={};
-  army.querySelectorAll("input,select").forEach(el=>{ if(el.id) saved[el.id]=el.value; });
-  const troops=v.troops.filter(t=>t.count>0);
-  let h=`<div class="cost" style="margin-bottom:6px">🍞 entretien troupes : ${v.troop_upkeep}/h</div><div class="bldlist">`;
-  h+=`<div class="bld"><div class="name">Troupes</div>`+(troops.length?
-    troops.map(t=>`<div class="cost">⚔️ ${t.name} : <b>${t.count}</b></div>`).join(""):
-    `<div class="cost" style="opacity:.6">aucune</div>`)+`</div>`;
-  if(v.training.length) h+=`<div class="bld"><div class="name">En formation</div>`+
-    v.training.map(t=>`<div class="cost">${t.unit} ×${t.remaining} (${fmtTimer(t.next_in)})</div>`).join("")+`</div>`;
-  if(v.movements&&v.movements.length) h+=`<div class="bld"><div class="name">Mouvements</div>`+
-    v.movements.map(m=>{
-      const label = m.kind==="trade"
-        ? `📦 ${m.phase==="back"?"marchands (retour)":`livraison ${m.cargo.reduce((a,b)=>a+b,0)} (${m.merchants} march.)`}`
-        : `${m.phase==="back"?"retour":m.kind} ×${m.n}`;
-      return `<div class="cost">${m.dir==="in"?"➡️":"⬅️"} ${label} (${fmtTimer(m.arrive_in)})</div>`;
-    }).join("")+`</div>`;
-  h+=`</div>`;
-  if(v.is_own){
-    for(const m of v.military){
-      h+=`<div style="margin-top:10px"><b>${m.building} (niv ${m.level})</b><div class="bldlist" style="margin-top:6px">`;
-      for(const u of m.units) h+=`<div class="bld"><div class="name">${u.name}</div>
-        <div class="cost">${fmtCost(u.cost)}</div><div class="cost">⏱️ ${u.time}s/u</div>
-        <input id="q_${m.building_id}_${u.index}" type="number" min="1" value="1" style="width:58px">
-        <button onclick="train(${m.building_id},${u.index})">Entraîner</button></div>`;
-      h+=`</div></div>`;
-    }
-    if(troops.length){
-      const tg=ALLV.filter(x=>x.id!==v.id);
-      h+=`<div style="margin-top:12px"><b>Envoyer une armée</b><div style="margin:6px 0">
-        Cible : <select id="sendTarget">`+tg.map(x=>`<option value="${x.id}">${x.name} (${x.x}|${x.y}) — ${x.player}</option>`).join("")+`</select>
-        Type : <select id="sendKind"><option value="raid">Razzia</option>
-          <option value="attack">Attaque</option><option value="reinforce">Renfort</option></select></div>
-        <div class="bldlist">`;
-      for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
-        <input id="send_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
-      h+=`</div><button style="margin-top:6px" onclick="sendArmy()">🚀 Envoyer</button></div>`;
-    }
-  }
-  army.innerHTML=h;
-  army.querySelectorAll("input,select").forEach(el=>{
-    if(el.id && saved[el.id]!=null) el.value=saved[el.id]; });
-}
-
-function renderMarket(v){
-  const box=document.getElementById("market");
-  const saved={};
-  box.querySelectorAll("input,select").forEach(el=>{ if(el.id) saved[el.id]=el.value; });
-  const m=v.market;
-  if(!m){ box.innerHTML=`<div class="cost" style="opacity:.6">Construis une place de marché pour transférer des ressources.</div>`; return; }
-  if(!v.is_own){ box.innerHTML=`<div class="cost" style="opacity:.6">Marché niveau ${m.level}.</div>`; return; }
-  const tg=ALLV.filter(x=>x.id!==v.id);
-  let h=`<div class="cost" style="margin-bottom:6px">🧺 marchands : <b>${m.merchants_free}</b>/${m.merchants_total} libres ·
-      capacité <b>${m.capacity}</b>/marchand (max ${m.merchants_free*m.capacity} maintenant)</div>`;
-  if(!tg.length){ box.innerHTML=h+`<div class="cost" style="opacity:.6">Aucun autre village où envoyer.</div>`; return; }
-  h+=`<div style="margin:6px 0">Vers : <select id="tradeTarget">`+
-    tg.map(x=>`<option value="${x.id}">${x.name} (${x.x}|${x.y}) — ${x.player}</option>`).join("")+`</select></div>`;
+// --- Panneau : entraînement (caserne / écurie / atelier / résidence) ---------
+function renderTrainPanel(s,P){
+  const saved=grabInputs(P);
+  const m=(LAST.military||[]).find(x=>x.building_id===s.building_id);
+  let h=secTitle("Entraînement");
+  const q=(LAST.training||[]).filter(t=>t.building_id===s.building_id);
+  if(q.length) h+=`<div class="cost" style="margin-bottom:6px">⏳ `+
+    q.map(t=>`${t.unit} ×${t.remaining} (${fmtTimer(t.next_in)})`).join(" · ")+`</div>`;
+  if(!m||!m.units.length){ P.innerHTML=h+`<div class="cost" style="opacity:.6">Aucune unité disponible.</div>`; return; }
   h+=`<div class="bldlist">`;
-  for(let i=0;i<4;i++) h+=`<div class="bld"><div class="cost">${RICON[i]} (dispo ${v.resources[i]})</div>
-      <input id="trade_${i}" type="number" min="0" value="0" style="width:72px"
-        oninput="updateMerchantHint()"></div>`;
+  for(const u of m.units){
+    h+=`<div class="bld"><div class="name">${u.name}</div>
+      <div class="cost">${fmtCost(u.cost)}</div><div class="cost">⏱️ ${u.time}s/u</div>`;
+    if(u.research_required && !u.researched)
+      h+=`<div class="cost" style="color:#ff8080">🔬 recherche requise (académie)</div>`;
+    else h+=`<input id="q_${s.building_id}_${u.index}" type="number" min="1" value="1" style="width:58px">
+        <button onclick="train(${s.building_id},${u.index})">Entraîner</button>`;
+    h+=`</div>`;
+  }
+  P.innerHTML=h+`</div>`; restoreInputs(P,saved);
+}
+
+// --- Panneau : place de marché (commerce) ------------------------------------
+async function loadMarketPanel(P){
+  const saved=grabInputs(P);
+  const d=await post(`/api/village/${CURRENT}/market`,{method:"GET"},"modalMsg");
+  if(MODAL_SLOT==null) return;
+  if(!d){ P.innerHTML=secTitle("Place de marché")+`<div class="cost" style="opacity:.6">Indisponible.</div>`; return; }
+  MODAL_MARKET=d;
+  let h=secTitle("Commerce")+`<div class="cost" style="margin-bottom:6px">🧺 marchands : <b>${d.merchants_free}</b>/${d.merchants_total} libres · capacité <b>${d.capacity}</b>/marchand</div>`;
+  if(!d.targets.length){ P.innerHTML=h+`<div class="cost" style="opacity:.6">Aucun village cible.</div>`; return; }
+  h+=`<div style="margin:6px 0">Vers : <select id="tradeTarget">`+
+    d.targets.map(t=>`<option value="${t.id}">${t.is_own?"★ ":""}${t.name} (${t.x}|${t.y}) — ${t.player} · ⏱️ ${fmtTimer(t.travel)}</option>`).join("")+`</select></div>`;
+  h+=`<div class="bldlist">`;
+  for(let i=0;i<4;i++) h+=`<div class="bld"><div class="cost">${RICON[i]} (dispo ${d.resources[i]})</div>
+      <input id="trade_${i}" type="number" min="0" value="0" style="width:72px" oninput="updateMerchantHint()"></div>`;
   h+=`</div><div class="cost" id="merchantHint" style="margin:6px 0;opacity:.8"></div>
       <button onclick="sendResources()">📦 Envoyer les ressources</button>`;
-  box.innerHTML=h;
-  box.querySelectorAll("input,select").forEach(el=>{
-    if(el.id && saved[el.id]!=null) el.value=saved[el.id]; });
-  updateMerchantHint();
+  P.innerHTML=h; restoreInputs(P,saved); updateMerchantHint();
 }
-
 function updateMerchantHint(){
-  const m=LAST&&LAST.market; if(!m) return;
-  let total=0; for(let i=0;i<4;i++){ const el=document.getElementById("trade_"+i);
-    total+=el?(parseInt(el.value)||0):0; }
+  const m=MODAL_MARKET; if(!m) return;
+  let total=0; for(let i=0;i<4;i++){ const el=document.getElementById("trade_"+i); total+=el?(parseInt(el.value)||0):0; }
   const need=Math.ceil(total/m.capacity);
   const hint=document.getElementById("merchantHint"); if(!hint) return;
   hint.textContent = total>0
     ? `${total} ressources → ${need} marchand(s)`+(need>m.merchants_free?` ⚠️ il n'en reste que ${m.merchants_free}`:"")
     : "";
 }
-
 async function sendResources(){
-  const amounts=[]; for(let i=0;i<4;i++){ const el=document.getElementById("trade_"+i);
-    amounts[i]=el?(parseInt(el.value)||0):0; }
+  const amounts=[]; for(let i=0;i<4;i++){ const el=document.getElementById("trade_"+i); amounts[i]=el?(parseInt(el.value)||0):0; }
   const body={target_id:+document.getElementById("tradeTarget").value, amounts};
   const d=await post(`/api/village/${CURRENT}/trade`,{method:"POST",
-    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
   if(d){ document.getElementById("msg").textContent=`📦 ${d.merchants} marchand(s) en route — arrivée dans ${d.arrive_in}s`;
     for(let i=0;i<4;i++){ const el=document.getElementById("trade_"+i); if(el) el.value=0; }
     render(d.village); loadReports(); }
+}
+
+// --- Panneau : place de rassemblement (envoi d'armée + mouvements) -----------
+function renderRallyPanel(P){
+  const saved=grabInputs(P), v=LAST;
+  let h=secTitle("Mouvements");
+  if(v.movements&&v.movements.length) h+=v.movements.map(m=>{
+      const label = m.kind==="trade"
+        ? `📦 ${m.phase==="back"?"marchands (retour)":`livraison ${m.cargo.reduce((a,b)=>a+b,0)} (${m.merchants} m.)`}`
+        : `${m.phase==="back"?"retour":m.kind} ×${m.n}`;
+      return `<div class="cost">${m.dir==="in"?"➡️":"⬅️"} ${label} (${fmtTimer(m.arrive_in)})</div>`;
+    }).join("");
+  else h+=`<div class="cost" style="opacity:.6">aucun mouvement</div>`;
+  const troops=v.troops.filter(t=>t.count>0), tg=ALLV.filter(x=>x.id!==v.id);
+  h+=secTitle("Envoyer une armée");
+  if(!troops.length) h+=`<div class="cost" style="opacity:.6">Aucune troupe disponible.</div>`;
+  else if(!tg.length) h+=`<div class="cost" style="opacity:.6">Aucun village cible (attaque une oasis via la carte).</div>`;
+  else {
+    h+=`<div style="margin:6px 0">Cible : <select id="sendTarget">`+
+      tg.map(x=>`<option value="${x.id}">${x.name} (${x.x}|${x.y}) — ${x.player}</option>`).join("")+`</select>
+      Type : <select id="sendKind"><option value="raid">Razzia</option>
+        <option value="attack">Attaque</option><option value="reinforce">Renfort</option></select></div><div class="bldlist">`;
+    for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
+      <input id="send_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
+    h+=`</div><button style="margin-top:6px" onclick="sendArmy()">🚀 Envoyer</button>`;
+  }
+  P.innerHTML=h; restoreInputs(P,saved);
+}
+async function sendArmy(){
+  const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("send_"+i); units[i]=el?(parseInt(el.value)||0):0; }
+  const body={target_id:+document.getElementById("sendTarget").value,
+    kind:document.getElementById("sendKind").value, units};
+  const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
+  if(d){ document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`;
+    render(d.village); loadReports(); }
+}
+
+// --- Panneau : académie (recherche d'unités) ---------------------------------
+async function loadAcademyPanel(P){
+  const d=await post(`/api/village/${CURRENT}/academy`,{method:"GET"},"modalMsg");
+  if(MODAL_SLOT==null) return;
+  if(!d){ P.innerHTML=secTitle("Académie")+`<div class="cost" style="opacity:.6">Indisponible.</div>`; return; }
+  let h=secTitle("Recherche d'unités");
+  if(!d.units.length){ P.innerHTML=h+`<div class="cost" style="opacity:.6">Rien à rechercher (construis caserne/écurie/atelier).</div>`; return; }
+  h+=`<div class="bldlist">`;
+  for(const u of d.units){
+    h+=`<div class="bld"><div class="name">${u.name}</div>`;
+    if(u.researched) h+=`<div class="cost" style="color:#7fe07f">✅ recherchée</div>`;
+    else if(u.in_queue!=null) h+=`<div class="cost">⏳ ${fmtTimer(u.in_queue)}</div>`;
+    else h+=`<div class="cost">${fmtCost(u.cost)}</div><div class="cost">⏱️ ${u.time}s</div>
+        <button onclick="research(${u.index})">Rechercher</button>`;
+    h+=`</div>`;
+  }
+  P.innerHTML=h+`</div>`;
+}
+
+// --- Panneau : forge (amélioration des unités) -------------------------------
+async function loadSmithyPanel(P){
+  const d=await post(`/api/village/${CURRENT}/smithy`,{method:"GET"},"modalMsg");
+  if(MODAL_SLOT==null) return;
+  if(!d){ P.innerHTML=secTitle("Forge")+`<div class="cost" style="opacity:.6">Indisponible.</div>`; return; }
+  let h=secTitle(`Améliorations — forge niv ${d.level}`)+`<div class="bldlist">`;
+  for(const u of d.units){
+    h+=`<div class="bld"><div class="name">${u.name}</div><div class="cost">niveau ${u.level}</div>`;
+    if(u.in_queue) h+=`<div class="cost">⏳ → ${u.in_queue.target} (${fmtTimer(u.in_queue.finish_in)})</div>`;
+    else if(u.next_level==null) h+=`<div class="cost" style="opacity:.6">niveau max</div>`;
+    else if(!u.can_upgrade) h+=`<div class="cost" style="opacity:.7">forge niv ${u.next_level} requis</div>`;
+    else h+=`<div class="cost">→ ${u.next_level} : ${fmtCost(u.next_cost)}</div><div class="cost">⏱️ ${u.next_time}s</div>
+        <button onclick="upgradeUnit(${u.index})">Améliorer</button>`;
+    h+=`</div>`;
+  }
+  P.innerHTML=h+`</div>`;
+}
+
+// --- Panneau : trappeur (construction de pièges) -----------------------------
+async function loadTrapperPanel(P){
+  const saved=grabInputs(P);
+  const d=await post(`/api/village/${CURRENT}/trapper`,{method:"GET"},"modalMsg");
+  if(MODAL_SLOT==null) return;
+  if(!d){ P.innerHTML=secTitle("Trappeur")+`<div class="cost" style="opacity:.6">Indisponible.</div>`; return; }
+  let h=secTitle("Pièges")+`<div class="cost" style="margin-bottom:6px">🪤 ${d.built}/${d.capacity} construits`+
+    (d.pending?` (+${d.pending} en cours)`:``)+` · ${fmtCost(d.trap_cost)}/piège · ⏱️ ${d.trap_time}s</div>`;
+  if(d.queue&&d.queue.length) h+=`<div class="cost">⏳ `+d.queue.map(q=>`×${q.remaining} (${fmtTimer(q.next_in)})`).join(" · ")+`</div>`;
+  if(d.free>0) h+=`<div style="margin-top:6px"><input id="trapN" type="number" min="1" max="${d.free}" value="${Math.min(10,d.free)}" style="width:70px">
+      <button onclick="buildTraps()">Construire</button> <span class="cost" style="opacity:.6">(max ${d.free})</span></div>`;
+  else h+=`<div class="cost" style="opacity:.6">Capacité de pièges atteinte.</div>`;
+  P.innerHTML=h; restoreInputs(P,saved);
+}
+
+// --- Vue d'ensemble (lecture seule) : troupes, formation, mouvements ---------
+function renderOverview(v){
+  const box=document.getElementById("overview");
+  const troops=v.troops.filter(t=>t.count>0);
+  let h=`<div class="cost" style="margin-bottom:6px">🍞 entretien troupes : ${v.troop_upkeep}/h</div><div class="bldlist">`;
+  h+=`<div class="bld"><div class="name">Troupes</div>`+(troops.length?
+    troops.map(t=>`<div class="cost">⚔️ ${t.name} : <b>${t.count}</b></div>`).join(""):
+    `<div class="cost" style="opacity:.6">aucune</div>`)+`</div>`;
+  if(v.training&&v.training.length) h+=`<div class="bld"><div class="name">En formation</div>`+
+    v.training.map(t=>`<div class="cost">${t.unit} ×${t.remaining} (${fmtTimer(t.next_in)})</div>`).join("")+`</div>`;
+  if(v.movements&&v.movements.length) h+=`<div class="bld"><div class="name">Mouvements</div>`+
+    v.movements.map(m=>{
+      const label = m.kind==="trade"
+        ? `📦 ${m.phase==="back"?"marchands (retour)":`livraison ${m.cargo.reduce((a,b)=>a+b,0)} (${m.merchants} m.)`}`
+        : `${m.phase==="back"?"retour":m.kind} ×${m.n}`;
+      return `<div class="cost">${m.dir==="in"?"➡️":"⬅️"} ${label} (${fmtTimer(m.arrive_in)})</div>`;
+    }).join("")+`</div>`;
+  box.innerHTML=h+`</div>`;
 }
 
 // ----- Carte du monde --------------------------------------------------------
@@ -444,6 +544,9 @@ async function sendFromMap(){
 async function openTile(x,y){
   const t=await (await fetch(`/api/tile/${x}/${y}`)).json();
   const T=document.getElementById("modalTitle"), L=document.getElementById("modalList");
+  // Modale de carte : pas un bâtiment → on neutralise l'état de modale-bâtiment
+  // (sinon le rafraîchissement périodique écraserait ce contenu) et on vide le panneau.
+  MODAL_SLOT=null; document.getElementById("modalPanel").innerHTML="";
   document.getElementById("modalMsg").textContent=""; MAP_TARGET=null;
   if(t.kind==="village"){ const v=t.village;
     T.textContent=`${v.is_own?"★ ":""}${v.name} (${x}|${y})`;

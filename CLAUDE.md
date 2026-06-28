@@ -16,6 +16,11 @@ UI web jouable + API JSON pour des agents. Voir `README.md` pour le détail et l
 - Écarts Kirilloid corrigés (cf. commentaires) : prérequis scierie/briqueterie intervertis,
   formule de capacité de cachette buguée. Si tu repères un autre écart, corrige vers le **vrai
   Travian** et documente-le.
+- **Coûts non modélisés par kirilloid → approximations documentées** (même statut que les
+  marchands, cf. `tribes.py`) : recherche en **académie** = coût d'entraînement de l'unité
+  (temps = `research_time` kirilloid) ; amélioration en **forge** = coût × niveau visé ;
+  **pièges** du trappeur = `village.TRAP_COST`/`TRAP_TIME`. Le niveau d'académie requis par
+  unité n'est pas modélisé (académie niv 1 suffit). À raffiner si une source fiable apparaît.
 - Le **combat** est validé contre les vecteurs de `t4/combat.spec.ts` (`tests/test_combat.py`) :
   ne pas régresser. Idem `tests/test_raid.py` pour le cycle d'attaque.
 
@@ -81,6 +86,16 @@ Phase 3 en cours (livrée incrémentalement) :
   Marchands indisponibles jusqu'au retour à vide ; surplus perdu au-delà du stockage cible.
   API `/api/village/{id}/market` + `/api/village/{id}/trade` ; UI : panneau « Place de marché »
   sous l'Armée. Verrouillé par `tests/test_trade.py`. Routes commerciales (récurrentes) : à faire.
+- ✅ **Interfaces de bâtiments** : chaque bâtiment s'utilise via sa **modale** (clic), qui
+  affiche son **effet au niveau courant → niveau suivant** (`app/engine/effects.py`) puis son
+  panneau fonctionnel : caserne/écurie/atelier/résidence → entraînement, marché → commerce,
+  place de rassemblement → envoi d'armée + mouvements, **académie → recherche** (débloque
+  l'entraînement des unités non basiques), **forge → amélioration** des unités (transmise au
+  combat via `movement.py`, plafonnée par le niveau de la forge), **trappeur → pièges**. État
+  persisté (`research`/`upgrades`/`traps` + files). Verrouillé par `tests/test_buildings.py`.
+  ⚠️ Pièges encore non pris en compte *dans la résolution de combat* (capture des assaillants) :
+  construction + capacité seulement, à câbler. Grande caserne/écurie : modale = amélioration
+  seule (remappage du producteur d'unités à faire).
 - ⬜ **Expansion 2ᵉ village** : points de culture (les bâtiments ont déjà `cp`/`culture_at`),
   slots de résidence/palais (`residence_benefit`/`palace_benefit`), entraînement de colons
   (déjà unités `is_settler`), fondation sur une vallée libre (réutiliser `layout_fields`).

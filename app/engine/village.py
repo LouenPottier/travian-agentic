@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 
 from app.data import buildings as BLD
+from app.data import formulas as F
 from app.data.buildings import B, Building
 from app.data.tribes import Tribe
 from app.data.units import UNITS, Unit
@@ -45,6 +46,29 @@ class TrainOrder:
 
 
 @dataclass
+class ResearchOrder:
+    """Recherche d'une unité en académie : une complétion unique (research[idx]=1)."""
+    unit_index: int
+    finish_at: float
+
+
+@dataclass
+class UpgradeOrder:
+    """Amélioration d'une unité en forge : porte upgrades[idx] à `target_level`."""
+    unit_index: int
+    target_level: int
+    finish_at: float
+
+
+@dataclass
+class TrapOrder:
+    """Construction de pièges (trappeur gaulois), à la chaîne comme l'entraînement."""
+    remaining: int
+    per_unit: float
+    next_finish: float
+
+
+@dataclass
 class Village:
     name: str
     tribe: Tribe
@@ -68,6 +92,15 @@ class Village:
     # pas et ne sont pas (ré)envoyables tant qu'elles ne sont pas rentrées.
     away: list[int] = field(default_factory=lambda: [0] * 10)
     training: list[TrainOrder] = field(default_factory=list)
+    # Académie : recherche débloquant l'entraînement (1 = recherchée), par index d'unité.
+    research: list[int] = field(default_factory=lambda: [0] * 10)
+    research_queue: list[ResearchOrder] = field(default_factory=list)
+    # Forge : niveau d'amélioration (attaque/défense) par index d'unité (0..niveau forge).
+    upgrades: list[int] = field(default_factory=lambda: [0] * 10)
+    upgrade_queue: list[UpgradeOrder] = field(default_factory=list)
+    # Trappeur (Gaulois) : nombre de pièges construits + file de construction.
+    traps: int = 0
+    trap_queue: list[TrapOrder] = field(default_factory=list)
 
 
 # Emplacements : 1..18 champs de ressources, 19..38 centre du village,
@@ -174,7 +207,9 @@ def tick(v: Village, now: float | None = None) -> None:
     if now <= v.updated_at:
         return
 
-    # Collecte des événements <= now : ('build', t, order) et ('train', t, order)
+    # Collecte des événements <= now : construction, entraînement, recherche
+    # (académie), amélioration (forge) et pièges (trappeur). Chacun peut modifier
+    # la production (champ amélioré, troupe de plus à nourrir), d'où le découpage.
     events: list[tuple[float, str, object]] = []
     for o in v.queue:
         if o.finish_at <= now:
@@ -186,6 +221,19 @@ def tick(v: Village, now: float | None = None) -> None:
                 break
             events.append((t, "train", to))
             t += to.per_unit
+    for ro in v.research_queue:
+        if ro.finish_at <= now:
+            events.append((ro.finish_at, "research", ro))
+    for uo in v.upgrade_queue:
+        if uo.finish_at <= now:
+            events.append((uo.finish_at, "upgrade", uo))
+    for tp in v.trap_queue:
+        t = tp.next_finish
+        for _ in range(tp.remaining):
+            if t > now:
+                break
+            events.append((t, "trap", tp))
+            t += tp.per_unit
     events.sort(key=lambda e: e[0])
 
     cursor = v.updated_at
@@ -194,14 +242,25 @@ def tick(v: Village, now: float | None = None) -> None:
         cursor = t
         if kind == "build":
             v.slots[payload.slot_index].level = payload.target_level
-        else:  # train : une unité sort
+        elif kind == "train":  # une unité sort
             v.troops[payload.unit_index] += 1
+            payload.remaining -= 1
+            payload.next_finish += payload.per_unit
+        elif kind == "research":
+            v.research[payload.unit_index] = 1
+        elif kind == "upgrade":
+            v.upgrades[payload.unit_index] = payload.target_level
+        else:  # trap : un piège construit
+            v.traps += 1
             payload.remaining -= 1
             payload.next_finish += payload.per_unit
 
     _accumulate(v, cursor, now)
     v.queue = [o for o in v.queue if o.finish_at > now]
     v.training = [to for to in v.training if to.remaining > 0]
+    v.research_queue = [ro for ro in v.research_queue if ro.finish_at > now]
+    v.upgrade_queue = [uo for uo in v.upgrade_queue if uo.finish_at > now]
+    v.trap_queue = [tp for tp in v.trap_queue if tp.remaining > 0]
     v.updated_at = now
 
 
@@ -381,6 +440,8 @@ def enqueue_training(v: Village, building_id: int, unit_index: int, count: int,
     units = UNITS[v.tribe]
     if not (0 <= unit_index < len(units)) or units[unit_index].producer != building_id:
         raise BuildError("Cette unité ne se forme pas ici.")
+    if needs_research(v, unit_index) and not v.research[unit_index]:
+        raise BuildError(f"{units[unit_index].name} : recherche en académie requise.")
 
     unit = units[unit_index]
     cost = [unit.cost[i] * count for i in range(4)]
@@ -394,6 +455,174 @@ def enqueue_training(v: Village, building_id: int, unit_index: int, count: int,
     order = TrainOrder(building_id=building_id, unit_index=unit_index,
                        remaining=count, per_unit=per_unit, next_finish=free + per_unit)
     v.training.append(order)
+    return order
+
+
+# --- Académie : recherche d'unités ------------------------------------------
+# En T4, seule la 1ʳᵉ unité de la caserne (index 0) est disponible d'emblée ;
+# toutes les autres unités militaires (caserne/écurie/atelier) doivent être
+# recherchées en académie. Les unités de la résidence (colon/chef) n'utilisent
+# pas l'académie. ⚠️ Kirilloid ne modélise PAS le coût de recherche : on prend le
+# coût d'entraînement de l'unité (le temps, lui, vient de kirilloid : `research_time`).
+RESEARCH_PRODUCERS = (B.BARRACKS, B.STABLES, B.WORKSHOP)
+
+
+def needs_research(v: Village, unit_index: int) -> bool:
+    u = UNITS[v.tribe][unit_index]
+    return u.producer in RESEARCH_PRODUCERS and unit_index != 0
+
+
+def is_researched(v: Village, unit_index: int) -> bool:
+    return not needs_research(v, unit_index) or bool(v.research[unit_index])
+
+
+def research_cost(v: Village, unit_index: int) -> tuple:
+    return tuple(UNITS[v.tribe][unit_index].cost)
+
+
+def research_time(v: Village, unit_index: int) -> float:
+    """Temps de recherche effectif (s) : `research_time` kirilloid ÷ vitesse serveur."""
+    return UNITS[v.tribe][unit_index].research_time / v.server_speed
+
+
+def researchable_units(v: Village) -> list[tuple[int, Unit]]:
+    """Unités recherchables : nécessitent une recherche et leur bâtiment producteur
+    est déjà construit (on ne recherche que ce qu'on pourra entraîner)."""
+    levels = building_levels(v)
+    out = []
+    for i, u in enumerate(UNITS[v.tribe]):
+        if needs_research(v, i) and levels.get(u.producer, 0) >= 1:
+            out.append((i, u))
+    return out
+
+
+def enqueue_research(v: Village, unit_index: int, now: float | None = None) -> ResearchOrder:
+    now = now or _time.time()
+    tick(v, now)
+    if building_levels(v).get(B.ACADEMY, 0) < 1:
+        raise BuildError("Académie requise pour rechercher.")
+    units = UNITS[v.tribe]
+    if not (0 <= unit_index < len(units)) or not needs_research(v, unit_index):
+        raise BuildError("Cette unité ne se recherche pas.")
+    if v.research[unit_index] or any(r.unit_index == unit_index for r in v.research_queue):
+        raise BuildError("Recherche déjà effectuée ou en cours.")
+    if building_levels(v).get(units[unit_index].producer, 0) < 1:
+        raise BuildError("Bâtiment producteur de l'unité absent.")
+
+    cost = research_cost(v, unit_index)
+    if any(v.resources[i] < cost[i] for i in range(4)):
+        raise BuildError("Ressources insuffisantes.")
+    for i in range(4):
+        v.resources[i] -= cost[i]
+    # Files de recherche en parallèle (chaque académie traite une recherche à la fois ;
+    # on enchaîne après la dernière en cours pour rester simple et déterministe).
+    free = now + max((r.finish_at - now for r in v.research_queue), default=0.0)
+    order = ResearchOrder(unit_index=unit_index, finish_at=free + research_time(v, unit_index))
+    v.research_queue.append(order)
+    return order
+
+
+# --- Forge : amélioration des unités (attaque/défense) ----------------------
+# La forge améliore les stats de combat (cf. engine.combat.upgrade). Le niveau
+# d'amélioration d'une unité est plafonné par le niveau de la forge (règle Travian).
+# ⚠️ Kirilloid ne modélise PAS le coût d'amélioration : approximation documentée =
+# coût d'entraînement × niveau visé ; temps = research_time × niveau ÷ 5.
+def smithy_level(v: Village) -> int:
+    return building_levels(v).get(B.SMITHY, 0)
+
+
+def upgrade_cost(v: Village, unit_index: int, target_level: int) -> tuple:
+    return tuple(F.round5(UNITS[v.tribe][unit_index].cost[i] * target_level) for i in range(4))
+
+
+def upgrade_time(v: Village, unit_index: int, target_level: int) -> float:
+    return UNITS[v.tribe][unit_index].research_time * target_level / 5 / v.server_speed
+
+
+def upgradable_units(v: Village) -> list[tuple[int, Unit]]:
+    """Unités améliorables : unités de combat de la tribu dont le bâtiment producteur
+    est construit (on n'améliore pas les colons)."""
+    levels = building_levels(v)
+    out = []
+    for i, u in enumerate(UNITS[v.tribe]):
+        if u.is_settler or u.producer < 0:
+            continue
+        if levels.get(u.producer, 0) >= 1:
+            out.append((i, u))
+    return out
+
+
+def enqueue_upgrade(v: Village, unit_index: int, now: float | None = None) -> UpgradeOrder:
+    now = now or _time.time()
+    tick(v, now)
+    level = smithy_level(v)
+    if level < 1:
+        raise BuildError("Forge requise pour améliorer les unités.")
+    units = UNITS[v.tribe]
+    if not (0 <= unit_index < len(units)) or units[unit_index].is_settler \
+            or units[unit_index].producer < 0:
+        raise BuildError("Cette unité ne s'améliore pas.")
+    if any(u.unit_index == unit_index for u in v.upgrade_queue):
+        raise BuildError("Amélioration déjà en cours pour cette unité.")
+    target = v.upgrades[unit_index] + 1
+    if target > level:
+        raise BuildError(f"La forge doit être au niveau {target} pour cette amélioration.")
+    if target > 20:
+        raise BuildError("Amélioration maximale atteinte.")
+
+    cost = upgrade_cost(v, unit_index, target)
+    if any(v.resources[i] < cost[i] for i in range(4)):
+        raise BuildError("Ressources insuffisantes.")
+    for i in range(4):
+        v.resources[i] -= cost[i]
+    free = now + max((u.finish_at - now for u in v.upgrade_queue), default=0.0)
+    order = UpgradeOrder(unit_index=unit_index, target_level=target,
+                         finish_at=free + upgrade_time(v, unit_index, target))
+    v.upgrade_queue.append(order)
+    return order
+
+
+# --- Trappeur (Gaulois) : construction de pièges ----------------------------
+# Le trappeur peut détenir jusqu'à `trapper_traps(niveau)` pièges. ⚠️ Kirilloid ne
+# modélise PAS le coût/temps des pièges : approximation documentée.
+TRAP_COST = (30, 40, 20, 10)   # par piège (approximation, vrai Travian ≈ petit coût)
+TRAP_TIME = 1000               # s par piège (vitesse 1), approximation
+
+
+def trap_capacity(v: Village) -> int:
+    lvl = building_levels(v).get(B.TRAPPER, 0)
+    return F.trapper_traps(lvl) if lvl >= 1 else 0
+
+
+def traps_pending(v: Village) -> int:
+    return sum(tp.remaining for tp in v.trap_queue)
+
+
+def traps_total(v: Village) -> int:
+    """Pièges déjà construits + en cours de construction."""
+    return v.traps + traps_pending(v)
+
+
+def enqueue_traps(v: Village, count: int, now: float | None = None) -> TrapOrder:
+    now = now or _time.time()
+    tick(v, now)
+    if count < 1:
+        raise BuildError("Nombre invalide.")
+    if building_levels(v).get(B.TRAPPER, 0) < 1:
+        raise BuildError("Trappeur requis.")
+    free_slots = trap_capacity(v) - traps_total(v)
+    if count > free_slots:
+        raise BuildError(f"Capacité dépassée ({free_slots} piège(s) possible(s)).")
+    cost = [TRAP_COST[i] * count for i in range(4)]
+    if any(v.resources[i] < cost[i] for i in range(4)):
+        raise BuildError("Ressources insuffisantes.")
+    for i in range(4):
+        v.resources[i] -= cost[i]
+    per_unit = TRAP_TIME / v.server_speed
+    free = now + max((tp.next_finish - now + (tp.remaining - 1) * tp.per_unit
+                      for tp in v.trap_queue), default=0.0)
+    order = TrapOrder(remaining=count, per_unit=per_unit, next_finish=free + per_unit)
+    v.trap_queue.append(order)
     return order
 
 

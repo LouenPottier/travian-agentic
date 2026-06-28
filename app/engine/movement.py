@@ -178,10 +178,10 @@ def _build_place(target: V.Village) -> C.Place:
 
 def _resolve_battle(origin, target, units, kind, now):
     """Résout un combat à l'arrivée et renvoie (survivants, butin)."""
-    off = C.Off(units=UNITS[origin.tribe], numbers=list(units), upgrades=[0] * 10,
-                pop=V.population(origin), kind=kind)
+    off = C.Off(units=UNITS[origin.tribe], numbers=list(units),
+                upgrades=list(origin.upgrades), pop=V.population(origin), kind=kind)
     deff = C.Defender(units=UNITS[target.tribe], numbers=list(target.troops),
-                      upgrades=[0] * 10)
+                      upgrades=list(target.upgrades))
     place = _build_place(target)
     res = C.combat(place, off, [deff])
 
@@ -220,8 +220,8 @@ def _resolve_oasis(origin, tile, units, kind, now):
     de moral (pas d'avantage « gros village » face aux animaux). Renvoie les
     survivants offensifs."""
     animals = tile["animals"] or [0] * 10
-    off = C.Off(units=UNITS[origin.tribe], numbers=list(units), upgrades=[0] * 10,
-                pop=V.population(origin), kind=kind)
+    off = C.Off(units=UNITS[origin.tribe], numbers=list(units),
+                upgrades=list(origin.upgrades), pop=V.population(origin), kind=kind)
     deff = C.Defender(units=UNITS[Tribe.NATURE], numbers=list(animals), upgrades=[0] * 10)
     place = C.Place(tribe=int(Tribe.NATURE), pop=off.pop, wall_level=0)
     res = C.combat(place, off, [deff])

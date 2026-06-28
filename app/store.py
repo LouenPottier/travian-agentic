@@ -13,7 +13,8 @@ import sqlite3
 from pathlib import Path
 
 from app.data.tribes import Tribe
-from app.engine.village import Village, Slot, BuildOrder, TrainOrder
+from app.engine.village import (Village, Slot, BuildOrder, TrainOrder,
+                                ResearchOrder, UpgradeOrder, TrapOrder)
 
 DB_PATH = Path(__file__).resolve().parent.parent / "game.db"
 
@@ -31,6 +32,13 @@ def village_to_dict(v: Village) -> dict:
         "queue": [[o.slot_index, o.target_level, o.finish_at] for o in v.queue],
         "training": [[t.building_id, t.unit_index, t.remaining, t.per_unit, t.next_finish]
                      for t in v.training],
+        "research": v.research,
+        "research_queue": [[r.unit_index, r.finish_at] for r in v.research_queue],
+        "upgrades": v.upgrades,
+        "upgrade_queue": [[u.unit_index, u.target_level, u.finish_at]
+                          for u in v.upgrade_queue],
+        "traps": v.traps,
+        "trap_queue": [[t.remaining, t.per_unit, t.next_finish] for t in v.trap_queue],
     }
 
 
@@ -40,6 +48,12 @@ def village_from_row(row: sqlite3.Row) -> Village:
     queue = [BuildOrder(slot_index=s, target_level=t, finish_at=f) for s, t, f in d["queue"]]
     training = [TrainOrder(building_id=b, unit_index=u, remaining=r, per_unit=p, next_finish=f)
                 for b, u, r, p, f in d.get("training", [])]
+    research_queue = [ResearchOrder(unit_index=u, finish_at=f)
+                      for u, f in d.get("research_queue", [])]
+    upgrade_queue = [UpgradeOrder(unit_index=u, target_level=t, finish_at=f)
+                     for u, t, f in d.get("upgrade_queue", [])]
+    trap_queue = [TrapOrder(remaining=r, per_unit=p, next_finish=f)
+                  for r, p, f in d.get("trap_queue", [])]
     return Village(
         id=row["id"], player_id=row["player_id"], name=row["name"],
         tribe=Tribe(row["tribe"]), x=row["x"], y=row["y"],
@@ -47,6 +61,9 @@ def village_from_row(row: sqlite3.Row) -> Village:
         slots=slots, resources=d["resources"], updated_at=d["updated_at"],
         queue=queue, server_speed=d["server_speed"], max_queue=d["max_queue"],
         troops=d["troops"], away=d.get("away", [0] * 10), training=training,
+        research=d.get("research", [0] * 10), research_queue=research_queue,
+        upgrades=d.get("upgrades", [0] * 10), upgrade_queue=upgrade_queue,
+        traps=d.get("traps", 0), trap_queue=trap_queue,
     )
 
 

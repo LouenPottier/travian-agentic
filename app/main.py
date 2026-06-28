@@ -22,6 +22,7 @@ from app.data.units import UNITS
 from app.engine import village as V
 from app.engine import movement as M
 from app.engine import world as W
+from app.engine import effects as EFF
 
 app = FastAPI(title="Travian local — T4.6")
 
@@ -101,6 +102,9 @@ def serialize(v: V.Village) -> dict:
                 "next_time": round(V.build_time(v, b, s.level + 1)) if s.level < b.max_level else None,
                 "finish_in": round(order.finish_at - now) if order else None,
                 "target_level": order.target_level if order else None,
+                "effect": EFF.building_effect(v, s.building_id, s.level),
+                "next_effect": (EFF.building_effect(v, s.building_id, s.level + 1)
+                                if s.level < b.max_level else None),
             })
         else:
             buildable = [{"id": b.id, "name": b.name, "cost": b.cost_at(1),
@@ -114,7 +118,8 @@ def serialize(v: V.Village) -> dict:
     levels = V.building_levels(v)
     troops = [{"index": i, "name": units[i].name, "count": c}
               for i, c in enumerate(v.troops)]
-    training = [{"building": BLD.get(t.building_id).name, "unit": units[t.unit_index].name,
+    training = [{"building_id": t.building_id, "building": BLD.get(t.building_id).name,
+                 "unit": units[t.unit_index].name,
                  "remaining": t.remaining, "next_in": round(t.next_finish - now)}
                 for t in v.training]
     military = []
@@ -126,7 +131,9 @@ def serialize(v: V.Village) -> dict:
         military.append({
             "building_id": bid, "building": b.name, "level": lvl,
             "units": [{"index": i, "name": u.name, "cost": list(u.cost),
-                       "time": round(u.train_time * b.benefit(lvl) / v.server_speed)}
+                       "time": round(u.train_time * b.benefit(lvl) / v.server_speed),
+                       "researched": V.is_researched(v, i),
+                       "research_required": V.needs_research(v, i)}
                       for i, u in V.trainable_units(v, bid)],
         })
 
@@ -285,6 +292,98 @@ def train(village_id: int, building_id: int, unit_index: int, count: int):
         raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
     try:
         V.enqueue_training(v, building_id, unit_index, count)
+    except V.BuildError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "village": serialize(v)}
+
+
+@app.get("/api/village/{village_id}/academy")
+def academy(village_id: int):
+    """Académie : unités recherchables (coût, temps), déjà recherchées, en cours."""
+    v = _get(village_id)
+    units = UNITS[v.tribe]
+    level = V.building_levels(v).get(B.ACADEMY, 0)
+    now = time.time()
+    items = []
+    for i, u in V.researchable_units(v):
+        in_queue = next((r for r in v.research_queue if r.unit_index == i), None)
+        items.append({"index": i, "name": u.name, "researched": bool(v.research[i]),
+                      "cost": list(V.research_cost(v, i)),
+                      "time": round(V.research_time(v, i)),
+                      "in_queue": round(in_queue.finish_at - now) if in_queue else None})
+    return {"level": level, "units": items}
+
+
+@app.post("/api/village/{village_id}/research/{unit_index}")
+def research(village_id: int, unit_index: int):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        V.enqueue_research(v, unit_index)
+    except V.BuildError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "village": serialize(v)}
+
+
+@app.get("/api/village/{village_id}/smithy")
+def smithy(village_id: int):
+    """Forge : niveau d'amélioration courant et coût/temps du niveau suivant par unité."""
+    v = _get(village_id)
+    level = V.smithy_level(v)
+    now = time.time()
+    items = []
+    for i, u in V.upgradable_units(v):
+        cur = v.upgrades[i]
+        in_queue = next((o for o in v.upgrade_queue if o.unit_index == i), None)
+        nxt = cur + 1
+        items.append({
+            "index": i, "name": u.name, "level": cur,
+            "can_upgrade": nxt <= level and nxt <= 20,
+            "next_level": nxt if nxt <= 20 else None,
+            "next_cost": list(V.upgrade_cost(v, i, nxt)) if nxt <= 20 else None,
+            "next_time": round(V.upgrade_time(v, i, nxt)) if nxt <= 20 else None,
+            "in_queue": ({"target": in_queue.target_level,
+                          "finish_in": round(in_queue.finish_at - now)} if in_queue else None),
+        })
+    return {"level": level, "units": items}
+
+
+@app.post("/api/village/{village_id}/upgrade/{unit_index}")
+def upgrade_unit(village_id: int, unit_index: int):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        V.enqueue_upgrade(v, unit_index)
+    except V.BuildError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "village": serialize(v)}
+
+
+@app.get("/api/village/{village_id}/trapper")
+def trapper(village_id: int):
+    """Trappeur : capacité de pièges, pièges construits / en cours, coût unitaire."""
+    v = _get(village_id)
+    if V.building_levels(v).get(B.TRAPPER, 0) < 1:
+        raise HTTPException(status_code=400, detail="Pas de trappeur dans ce village.")
+    now = time.time()
+    pending = [{"remaining": tp.remaining, "next_in": round(tp.next_finish - now)}
+               for tp in v.trap_queue]
+    return {"capacity": V.trap_capacity(v), "built": v.traps,
+            "pending": V.traps_pending(v), "queue": pending,
+            "free": V.trap_capacity(v) - V.traps_total(v),
+            "trap_cost": list(V.TRAP_COST),
+            "trap_time": round(V.TRAP_TIME / v.server_speed)}
+
+
+@app.post("/api/village/{village_id}/traps/{count}")
+def build_traps(village_id: int, count: int):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        V.enqueue_traps(v, count)
     except V.BuildError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "village": serialize(v)}
