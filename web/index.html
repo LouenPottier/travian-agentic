@@ -428,6 +428,7 @@ function renderRallyPanel(P){
     for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
       <input id="send_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
     h+=`</div>`;
+    h+=siegeOptions(v.siege,"send");
     if(v.hero_here && v.hero_here.available) h+=`<label class="cost" style="display:block;margin-top:6px">
       <input type="checkbox" id="sendHero"> 🦸 Envoyer le héros (${v.hero_here.name}, ❤️${v.hero_here.health})
       <span style="opacity:.6">— attaque/razzia uniquement</span></label>`;
@@ -439,7 +440,8 @@ async function sendArmy(){
   const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("send_"+i); units[i]=el?(parseInt(el.value)||0):0; }
   const hx=document.getElementById("sendHero");
   const body={target_id:+document.getElementById("sendTarget").value,
-    kind:document.getElementById("sendKind").value, units, with_hero:hx?hx.checked:false};
+    kind:document.getElementById("sendKind").value, units, with_hero:hx?hx.checked:false,
+    targets:collectSiege(LAST.siege,"send")};
   const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
   if(d){ document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`;
@@ -673,6 +675,25 @@ function viewVillage(id){ CURRENT=id;
   const sel=document.querySelector("#vsel select"); if(sel) sel.value=id;
   closeModal(); showTab("village"); load();
 }
+// Sélecteur(s) de cible de catapulte (siège) — affiché si le village abrite des
+// catapultes. Le backend n'en tient compte que sur une attaque de village.
+function siegeOptions(siege, prefix){
+  if(!siege) return "";
+  const opts=`<option value="">— aucune —</option>`+
+    siege.targets.map(t=>`<option value="${t.id}">${t.name}</option>`).join("");
+  let sels=""; for(let i=0;i<siege.limit;i++)
+    sels+=`<select id="${prefix}_cata_${i}" style="margin:2px 4px 2px 0">${opts}</select>`;
+  return `<div class="cost" style="margin-top:6px">🎯 Catapultes — cible(s) (attaque) : ${sels}</div>`;
+}
+function collectSiege(siege, prefix){
+  if(!siege) return null;
+  const out=[]; for(let i=0;i<siege.limit;i++){
+    const el=document.getElementById(`${prefix}_cata_${i}`);
+    if(el && el.value) out.push(+el.value);
+  }
+  return out.length?out:null;
+}
+
 // Cible courante de la modale de carte (village ou oasis) pour l'envoi d'armée.
 let MAP_TARGET=null;
 function attackForm(){
@@ -692,6 +713,7 @@ function attackForm(){
   for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
     <input id="mapunit_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
   h+=`</div>`;
+  if(allowReinforce) h+=siegeOptions(LAST.siege,"map");  // siège : cible village seulement
   if(heroAv) h+=`<label class="cost" style="display:block;margin-top:6px">
     <input type="checkbox" id="mapHero"> 🦸 Envoyer le héros (${LAST.hero_here.name}, ❤️${LAST.hero_here.health})</label>`;
   h+=`<button style="margin-top:8px" onclick="sendFromMap()">🚀 Envoyer</button></div>`;
@@ -702,7 +724,7 @@ async function sendFromMap(){
     units[i]=el?(parseInt(el.value)||0):0; }
   const hx=document.getElementById("mapHero");
   const body={kind:document.getElementById("mapKind").value, units,
-    with_hero:hx?hx.checked:false, ...MAP_TARGET};
+    with_hero:hx?hx.checked:false, targets:collectSiege(LAST.siege,"map"), ...MAP_TARGET};
   const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
   if(d){ closeModal(); loadMap(); loadReports();
@@ -817,14 +839,24 @@ let MAP_LOADED=false;
 function fmtDate(ts){ return new Date(ts*1000).toLocaleString("fr-FR",
   {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }
 
+// Récap des destructions de siège (muraille + bâtiments) dans un rapport.
+function fmtSiege(s){
+  if(!s) return "";
+  const parts=[];
+  if(s.mur) parts.push(`🧱 ${s.mur.batiment} ${s.mur.avant}→${s.mur.apres}`);
+  for(const d of (s.degats||[])) parts.push(`💥 ${d.batiment} ${d.avant}→${d.apres}`);
+  return parts.length?` · `+parts.join(" · "):"";
+}
+
 async function loadReports(){
   const d=await (await fetch("/api/reports")).json();
   const reps=d.reports;
   const box=document.getElementById("reports");
   box.innerHTML=reps.length ? reps.map(r=>{ const b=r.body; let line="";
     const caps=b.captures?b.captures.reduce((a,c)=>a+c,0):0;
-    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(caps?` · 🪤 ${caps} piégé(s)`:"")+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"");
-    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(caps?` · 🪤 ${caps} capturé(s)`:"")+(b.hero_def?" · 🦸 héros en défense":"");
+    const sg=fmtSiege(b.siege);
+    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(caps?` · 🪤 ${caps} piégé(s)`:"")+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"")+sg;
+    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(caps?` · 🪤 ${caps} capturé(s)`:"")+(b.hero_def?" · 🦸 héros en défense":"")+sg;
     else if(b.type==="oasis"){ const cq=b.conquete; line=`pertes ${b.pertes_pct}%${b.cleared?" · 🎉 oasis nettoyée":" · animaux restants"}`+(cq&&cq.conquered?` · 🏞️ volée à ${cq.from} → ${cq.village}`:(cq&&cq.freed?` · 🏳️ libérée de ${cq.from}`:""))+(b.hero?` · 🦸${b.hero_alive?"":" 💀"}`:""); }
     else if(b.type==="oasis_lost") line=`🌴 ${b.village} perd l'oasis (${b.coords[0]}|${b.coords[1]})`;
     else if(b.type==="release") line=`🕊️ libérés de ${b.de}`;
