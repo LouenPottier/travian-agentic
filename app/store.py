@@ -39,6 +39,7 @@ def village_to_dict(v: Village) -> dict:
                           for u in v.upgrade_queue],
         "traps": v.traps,
         "trap_queue": [[t.remaining, t.per_unit, t.next_finish] for t in v.trap_queue],
+        "oases": v.oases,
     }
 
 
@@ -64,6 +65,7 @@ def village_from_row(row: sqlite3.Row) -> Village:
         research=d.get("research", [0] * 10), research_queue=research_queue,
         upgrades=d.get("upgrades", [0] * 10), upgrade_queue=upgrade_queue,
         traps=d.get("traps", 0), trap_queue=trap_queue,
+        oases=d.get("oases", []),
     )
 
 
@@ -156,6 +158,11 @@ def init_db() -> None:
                 c.execute(f"ALTER TABLE players ADD COLUMN {col}")
             except sqlite3.OperationalError:
                 pass
+        # Occupation d'oasis : le village (NULL = libre) qui annexe la case oasis.
+        try:
+            c.execute("ALTER TABLE tiles ADD COLUMN owner_id INTEGER")
+        except sqlite3.OperationalError:
+            pass
 
 
 # --- Cases du monde (carte) --------------------------------------------------
@@ -174,8 +181,10 @@ def insert_tiles(tiles: list[dict]) -> None:
 
 
 def _tile_from_row(row: sqlite3.Row) -> dict:
+    keys = row.keys()
     return {"x": row["x"], "y": row["y"], "kind": row["kind"], "layout": row["layout"],
-            "animals": json.loads(row["animals"]) if row["animals"] else None}
+            "animals": json.loads(row["animals"]) if row["animals"] else None,
+            "owner_id": row["owner_id"] if "owner_id" in keys else None}
 
 
 def get_tile(x: int, y: int) -> dict | None:
@@ -196,6 +205,12 @@ def update_tile_animals(x: int, y: int, animals: list[int]) -> None:
     with connect() as c:
         c.execute("UPDATE tiles SET animals=? WHERE x=? AND y=?",
                   (json.dumps(animals), x, y))
+
+
+def set_tile_owner(x: int, y: int, owner_id: int | None) -> None:
+    """Rattache (ou détache, owner_id=None) une oasis à un village."""
+    with connect() as c:
+        c.execute("UPDATE tiles SET owner_id=? WHERE x=? AND y=?", (owner_id, x, y))
 
 
 def insert_movement(origin_id, target_id, owner_id, kind, phase, units, arrive_at,

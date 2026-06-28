@@ -25,6 +25,7 @@ from app.engine import world as W
 from app.engine import effects as EFF
 from app.engine import hero as HERO
 from app.engine import expansion as EXP
+from app.engine import oasis as OAS
 from app.data import items as IT
 
 app = FastAPI(title="Travian local — T4.6")
@@ -207,6 +208,9 @@ def serialize(v: V.Village) -> dict:
         "queue_len": len(v.queue), "max_queue": v.max_queue, "slots": slots,
         "troops": troops, "training": training, "military": military,
         "movements": moves, "market": market, "hero_here": hero_here,
+        "oases": [{"x": o["x"], "y": o["y"], "label": W.oasis_label(o["code"]),
+                   "emoji": W.oasis_emoji(o["code"])} for o in v.oases],
+        "oasis_slots": {"used": len(v.oases), "max": OAS.max_oases(v)},
     }
 
 
@@ -251,6 +255,7 @@ def map_view(cx: int = 0, cy: int = 0, r: int = 7):
     """Viewport de la carte : cases (vallées/oasis/villages) dans un carré ±r."""
     r = max(1, min(r, 15))
     villages = _villages_by_xy()
+    by_id = {v["id"]: v for v in villages.values()}
     tiles = []
     for t in store.tiles_in_box(cx - r, cx + r, cy - r, cy + r):
         cell = {"x": t["x"], "y": t["y"], "kind": t["kind"]}
@@ -260,9 +265,12 @@ def map_view(cx: int = 0, cy: int = 0, r: int = 7):
             cell["village"] = {"id": v["id"], "name": v["name"], "player": v["player"],
                                "is_own": v["is_own"], "is_capital": bool(v["is_capital"])}
         elif t["kind"] == "oasis":
+            owner = by_id.get(t.get("owner_id"))
             cell["oasis"] = {"label": W.oasis_label(t["layout"]),
                              "emoji": W.oasis_emoji(t["layout"]),
-                             "animals": W.animal_count(t["animals"])}
+                             "animals": W.animal_count(t["animals"]),
+                             "owned": owner is not None,
+                             "is_own_oasis": bool(owner and owner["is_own"])}
         else:
             cell["layout"] = t["layout"]
         tiles.append(cell)
@@ -284,12 +292,21 @@ def tile_detail(x: int, y: int):
     elif t["kind"] == "oasis":
         bonus = W.oasis_bonus(t["layout"])
         res_names = ["bois", "argile", "fer", "céréales"]
+        owner = None
+        if t.get("owner_id") is not None:
+            ov = store.load_village(t["owner_id"])
+            if ov is not None:
+                owner = {"id": ov.id, "name": ov.name,
+                         "is_own": ov.player_id == HUMAN_PLAYER_ID}
         out["oasis"] = {
             "label": W.oasis_label(t["layout"]),
             "emoji": W.oasis_emoji(t["layout"]),
             "bonus": [{"resource": res_names[i], "percent": p} for i, p in bonus.items()],
             "animals": W.animal_breakdown(t["animals"]),
             "total_animals": W.animal_count(t["animals"]),
+            "owner": owner,
+            "eligible_villages": (OAS.eligible_villages(HUMAN_PLAYER_ID, t)
+                                  if owner is None else []),
         }
     else:
         w, c, i, cr = (int(n) for n in t["layout"].split("-"))
@@ -625,6 +642,37 @@ def settle(village_id: int, body: Settle):
     except EXP.ExpansionError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "arrive_in": info["arrive_in"], "village": serialize(_get(village_id))}
+
+
+# --- Occupation d'oasis (manoir du héros) ------------------------------------
+class OasisTarget(BaseModel):
+    x: int
+    y: int
+
+
+@app.post("/api/village/{village_id}/oasis/occupy")
+def occupy_oasis(village_id: int, body: OasisTarget):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        info = OAS.occupy(village_id, body.x, body.y, HUMAN_PLAYER_ID, time.time())
+    except OAS.OasisError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "oasis": {"x": info["x"], "y": info["y"], "label": info["label"]},
+            "village": serialize(_get(village_id))}
+
+
+@app.post("/api/village/{village_id}/oasis/abandon")
+def abandon_oasis(village_id: int, body: OasisTarget):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        OAS.abandon(village_id, body.x, body.y, HUMAN_PLAYER_ID, time.time())
+    except OAS.OasisError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "village": serialize(_get(village_id))}
 
 
 @app.get("/api/reports")

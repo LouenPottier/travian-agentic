@@ -101,6 +101,10 @@ class Village:
     # Trappeur (Gaulois) : nombre de pièges construits + file de construction.
     traps: int = 0
     trap_queue: list[TrapOrder] = field(default_factory=list)
+    # Oasis annexées (manoir du héros) : leur bonus de production est crédité à ce
+    # village. Chaque entrée : {"x", "y", "code"} (code de bonus de la case, cf.
+    # data/world). Le nombre maximal dépend du niveau du manoir (cf. engine.oasis).
+    oases: list[dict] = field(default_factory=list)
 
 
 # Emplacements : 1..18 champs de ressources, 19..38 centre du village,
@@ -148,10 +152,19 @@ def gross_production(v: Village) -> list[float]:
                 best = max(best, BLD.get(building_id).benefit(s.level))  # % cumulé
         return best / 100.0
 
-    prod[WOOD] *= 1 + bonus(B.SAWMILL)
-    prod[CLAY] *= 1 + bonus(B.BRICKYARD)
-    prod[IRON] *= 1 + bonus(B.IRONFOUNDRY)
-    prod[CROP] *= 1 + bonus(B.GRAINMILL) + bonus(B.BAKERY)
+    # Bonus des oasis annexées : % de la production de base du type, **additif**
+    # avec les bâtiments de raffinage (fidélité Travian : prod = base × (1 + raffinage%
+    # + oasis%)). Calculé depuis les codes d'oasis stockés sur le village.
+    from app.engine import world as W
+    oasis_pct = [0.0, 0.0, 0.0, 0.0]
+    for o in v.oases:
+        for res, pct in W.oasis_bonus(o["code"]).items():
+            oasis_pct[res] += pct / 100.0
+
+    prod[WOOD] *= 1 + bonus(B.SAWMILL) + oasis_pct[WOOD]
+    prod[CLAY] *= 1 + bonus(B.BRICKYARD) + oasis_pct[CLAY]
+    prod[IRON] *= 1 + bonus(B.IRONFOUNDRY) + oasis_pct[IRON]
+    prod[CROP] *= 1 + bonus(B.GRAINMILL) + bonus(B.BAKERY) + oasis_pct[CROP]
     return prod
 
 
