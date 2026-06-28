@@ -154,12 +154,32 @@ def test_hero_in_combat():
     print(f"✅ héros au combat : XP {round(h.experience)}, santé {round(h.health)}, statut {h.status}")
 
 
+def test_production_rates_exact():
+    """Production de ressources fidèle au vrai Travian T4 : ressource unique = +10/pt
+    sur cette seule ressource ; réparti = +3/pt sur **chacune** des 4 ressources."""
+    h = H.Hero(player_id=1, home_village_id=1)
+    h.res_points = 4
+    # Mode ressource unique (bois) : 4 × 10 = 40 sur le bois, 0 ailleurs.
+    h.res_choice = 0
+    assert H.hero_production(h) == [40.0, 0.0, 0.0, 0.0], H.hero_production(h)
+    assert H.effective(h)["production_per_hour"] == 40
+    # Mode réparti : 4 × 3 = 12 sur CHAQUE ressource (total 48 > 40, comme le vrai jeu).
+    h.res_choice = -1
+    assert H.hero_production(h) == [12.0, 12.0, 12.0, 12.0], H.hero_production(h)
+    assert H.effective(h)["production_per_hour"] == 12
+    # Aucun point ⇒ aucune production.
+    h.res_points = 0
+    assert H.hero_production(h) == [0.0, 0.0, 0.0, 0.0]
+    print("✅ taux exacts : 10/pt (unique), 3/pt de chaque (réparti)")
+
+
 def main():
     test_level_and_allocate()
     test_health_regen_and_production()
     test_adventure_cycle()
     test_items()
     test_hero_in_combat()
+    test_production_rates_exact()
     print("\n✅ Héros / aventures / objets validés")
 
 
