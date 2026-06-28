@@ -38,7 +38,13 @@ Deux sources, deux rôles **distincts** — ne pas les confondre :
    marché/expansion ≈ identique à T4.6). Forks T4.x si besoin : `advocaite/TravianT4.6`,
    `Travium/Travium` (T4.4/4.6), `dsteindo/TravianT4_PHP7`.
 3. **Conflit entre les deux → le vrai Travian tranche**, et on documente l'écart (cf. écarts déjà
-   corrigés ci-dessus).
+   corrigés ci-dessus). **Pour consulter « le vrai Travian » — et dès qu'on a un doute sur une
+   fonctionnalité ou qu'on ne trouve l'info ni chez kirilloid ni dans TravianZ — vérifier la doc
+   officielle et le wiki communautaire (par ordre) :**
+   - **`support.travian.com`** (centre d'aide officiel Travian Legends) = autorité de comportement.
+   - **`travian.fandom.com/wiki`** (wiki communautaire Fandom) en complément.
+   Ne **jamais** trancher une mécanique « de mémoire » : recouper sur ces sources et **citer l'URL**
+   dans le commentaire/la doc de l'écart (cf. la garnison d'oasis, recoupée ainsi).
 4. **Garde-fous** : (a) TravianZ est un *clone* (ère T3.6) avec ses propres bugs et sa dérive de
    version → jamais oracle de chiffres, jamais copier-coller (archi PHP+MySQL+cron ≠ Python+SQLite
    +sim paresseuse : on retraduit « le cron fait X toutes les N s » en « au passage de la date,
@@ -158,6 +164,15 @@ Phase 3 en cours (livrée incrémentalement) :
   détenteur (notifié) et la rattache à un village éligible de l'attaquant (`best_eligible_village`,
   préférence à l'origine ; sinon oasis seulement libérée). UI : récap dans le rapport + indice dans
   la modale de case. L'occupation *pacifique* (`occupy`) reste réservée aux oasis libres.
+  ⚠️ **SIMPLIFICATION ACTUELLE INFIDÈLE — garnison d'oasis non modélisée** : `movement.send`
+  interdit *tout* renfort d'oasis (« On ne peut pas renforcer une oasis. ») et
+  `_resolve_oasis`/`oasis.conquer` ne font qu'un combat **troupes-vs-animaux** ⇒ une oasis occupée
+  par un joueur se reprend en battant des *animaux*, alors qu'elle devrait être défendue par la
+  **garnison** de son propriétaire. Le vrai T4.6 (cf. support.travian.com / wiki) : oasis **libre**
+  = animaux seulement, pas de garnison ; oasis **occupée par toi** = tu **peux** y stationner des
+  renforts (nourris par le village d'attache, rapatriables au rassemblement, **sans** bonus
+  mur/résidence) ; **reprendre** une oasis ennemie = **attaque normale** (pas razzia) qui **détruit
+  la garnison** stationnée. → à corriger (cf. trous Phase 3).
 - ✅ **Siège câblé** (`movement.py`, verrouillé par `tests/test_buildings.test_siege_wiring`) :
   le calcul existait déjà dans `combat.py` (`result.wall` béliers, `result.buildings` catapultes) ;
   il est maintenant **câblé**. `send(..., targets=[ids de bâtiments])` conserve les cibles de
@@ -172,19 +187,37 @@ Phase 3 en cours (livrée incrémentalement) :
   bâtiments visables, `CATA_TARGET_BUILDINGS`) si le village abrite des catapultes. UI : sélecteur(s)
   « 🎯 Catapultes — cible(s) » dans les deux formulaires d'envoi (rassemblement & carte, village
   uniquement), récap « 🧱/💥 avant→après » dans les rapports.
+- ✅ **Conquête de village (loyauté + chefs)** (`app/engine/conquest.py`, verrouillé par
+  `tests/test_conquest.py`) : chaque village a une **loyauté** 0..100 (`Village.loyalty`,
+  persistée) qui **régénère** paresseusement dans `village._accumulate` (+⅔ × niveau du
+  **bâtiment d'administration** = max résidence/palais, par heure ; ×vitesse serveur ;
+  sans résidence/palais ⇒ pas de régén). Un **administrateur survivant** (sénateur/chef/chef
+  de clan, `is_chief`) **réduit la loyauté** sur **attaque normale** (jamais razzia), via
+  `_resolve_battle` : drop par chef = plage de tribu (Rom 20–30, Teu/Gau 20–25). La baisse
+  n'a lieu que si la cible est **éligible** (`conquer_eligible`, évalué **après le siège**) :
+  **plus de bâtiment d'administration actif** (résidence/palais détruit dans la même attaque
+  suffit), **pas une capitale**, **pas l'unique village** du défenseur, et l'attaquant a
+  **culture + emplacement d'expansion** (réutilise `expansion.expansion_status.can_settle`).
+  À **0 %** → `conquer_village` : changement de propriétaire, le village **adopte la tribu**
+  du conquérant et **n'est plus capitale** ; les **survivants garnisonnent** (administrateurs
+  retirés, ils disparaissent) ; **troupes du village conquis perdues** (`troops`+`away`+files,
+  mouvements partants supprimés) ; **recherche/forge réinitialisées** ; **mur supprimé** ;
+  **bâtiments d'une autre tribu supprimés** ; **oasis annexées libérées** ; **loyauté → 25**.
+  ⚠️ **Kirilloid muet** → tous les chiffres viennent de la **doc officielle/wiki** (citée en
+  tête de `conquest.py` : support.travian.com, unofficialtravian, travianlibrary). `RESET_LOYALTY`
+  (=25) et la non-destruction des renforts stationnés ailleurs = **approximations documentées**.
+  Pas de ±5 % de célébration (dépend de l'hôtel de ville, item #2). UI : badge 🏳️ loyauté dans
+  l'en-tête + récap loyauté/conquête dans les rapports off/déf (les chefs s'envoient comme des
+  troupes via le rassemblement). Les administrateurs s'entraînent **au palais niv 10+** (déjà géré).
 - ⬜ **Combat héros — affinages** : le héros n'est embarqué que depuis son village d'attache
   (pas de relais entre villages) ; pas encore de monture→cavalerie en combat, ni de prise en
   compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.
 
 ### Mécaniques Phase 3 restant à implémenter (recoupé code / vrai T4.6 / TravianZ `GameEngine/`)
 Par ordre de rentabilité recommandé :
-1. ⬜ **Conquête de village (loyauté + chefs)** : `is_chief` (Sénateur/Chef/Chef de clan) est défini
-   dans `units.py` mais **utilisé nulle part**. Manque tout le système : **loyauté** par village
-   (0–100, régén +2 / 3 h × niveau résidence/palais/centre de commandement) ; le chef réduit la
-   loyauté sur **attaque normale** (pas razzia) si pas/plus de bâtiment d'administration dans la
-   cible, cible ≠ capitale, ≠ unique village du défenseur, assez de points de culture, et le chef
-   survit ; à **0 % → changement de propriétaire** (troupes du village conquis perdues même en
-   déplacement, niveaux −1 si avatar plus petit). Source chiffres : `kirilloid/conq.php`.
+1. ✅ **Conquête de village (loyauté + chefs)** — **fait** (cf. puce ✅ « Conquête de village »
+   ci-dessus, `app/engine/conquest.py`, `tests/test_conquest.py`). Reste à brancher le ±5 %
+   de célébration une fois l'hôtel de ville fait (item suivant).
 2. ⬜ **Hôtel de ville / célébrations** : `TOWNHALL` (id 23) existe (`buildings.py`, `effects.py`)
    mais les **petite/grande célébrations** (points de culture ; la grande débloque le bonus de
    conquête ±5 %/chef) ne sont pas implémentées. À brancher sur la culture déjà gérée
@@ -199,6 +232,29 @@ Par ordre de rentabilité recommandé :
    joueur-à-joueur** (`Message.php` ; on a les rapports, pas les MP), **classements/statistiques**
    (`Ranking.php`), NPC trader / bourse du marché (à décider si dans le périmètre), médailles,
    protection débutant.
+6. ⬜ **Bâtiments spéciaux constructibles mais INERTES** (effet décoratif seulement) : tous ont
+   leur table `buildings.py` + un descriptif `effects.py`, mais **aucun effet câblé dans le moteur**
+   (`grep B.X` ⇒ 0 usage hors `data`/`effects`). Plusieurs **cassent la fidélité de systèmes déjà
+   implémentés** ⇒ corrections de fidélité bon marché, pas du contenu « endgame » :
+   - **Arène** (place de tournoi, id 13) : bonus de vitesse des troupes **au-delà de 20 cases**.
+     `movement.army_speed` = simple min des vitesses, aucun bonus ⇒ **fausse les durées de trajet déjà codées**.
+   - **Tailleur de pierre** (id 33) : durabilité des bâtiments ↑ vs catapultes ⇒ **impacte le siège déjà câblé**.
+   - **Grand entrepôt / grand grenier** (id 37/38) : `village.warehouse_capacity`/`granary_capacity`
+     ne comptent **que** `WAREHOUSE`/`GRANARY` ⇒ ces deux bâtiments **n'ajoutent rien au stockage**.
+   - **Brasserie** (Teuton, id 34) : bonus d'attaque + débloque la **grande célébration** (à traiter
+     avec l'item 2). « brew » n'est qu'un *commentaire* dans `combat.py:12`, rien ne l'alimente.
+   - **Abreuvoir** (Romain, id 40) : coût/entretien cavalerie ↓ + vitesse cavalerie ↑. Inerte.
+   ⚠️ Chiffres à recouper kirilloid (modèle `t4`) ; mécanique/cas limites TravianZ `GameEngine/`.
+7. ⬜ **Garnison d'oasis (renfort + défense + reprise)** — corrige une simplification infidèle de
+   l'occupation d'oasis déjà livrée (cf. puce « Occupation d'oasis »). Vrai T4.6 (recoupé
+   support.travian.com / wiki) : on **peut renforcer une oasis qu'on occupe** (troupes nourries par
+   le village d'attache, rapatriables au rassemblement, **sans** bonus mur/résidence) ; une oasis
+   **libre** n'a que des animaux ; **reprendre** une oasis ennemie = **attaque normale** (pas razzia)
+   qui doit **détruire la garnison** du propriétaire (pas juste les animaux). À faire : lever
+   l'interdit `movement.send` pour `kind="reinforce"` vers une oasis **occupée par l'envoyeur** ;
+   stocker la garnison (sur le `tile` / `Village.oases`) ; faire défendre cette garnison dans
+   `_resolve_oasis` quand l'oasis est occupée (animaux seulement si libre) ; conditionner
+   `oasis.conquer` à la destruction de la garnison. Verrouiller par un test.
 
 > Note : la **famine** est déjà faite (`village.py._starve` : grenier vide + prod de blé négative →
 > mort de troupes), ne pas la relister comme manquante.

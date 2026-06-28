@@ -109,6 +109,9 @@ class Village:
     # Chaque entrée : {"player_id", "village_id", "tribe", "units": [10]}. Chaque
     # unité retenue occupe un piège ; un groupe est libérable (retour au propriétaire).
     prisoners: list[dict] = field(default_factory=list)
+    # Loyauté (0..100) : cible de la conquête par chef/sénateur. Régénère au passage
+    # du temps (+⅔ × niveau du bâtiment d'administration / h, cf. engine.conquest).
+    loyalty: float = 100.0
 
 
 # Emplacements : 1..18 champs de ressources, 19..38 centre du village,
@@ -129,6 +132,13 @@ def population(v: Village) -> int:
     """Population totale du village = consommation de céréales par les habitants."""
     return sum(building_population(s.building_id, s.level)
                for s in v.slots.values() if s.level > 0)
+
+
+def admin_building_level(v: Village) -> int:
+    """Niveau du bâtiment d'administration (résidence/palais) — pilote la régén de
+    loyauté et protège contre la conquête tant qu'il est présent (cf. engine.conquest)."""
+    levels = building_levels(v)
+    return max(levels.get(B.RESIDENCE, 0), levels.get(B.PALACE, 0))
 
 
 def building_levels(v: Village) -> dict[int, int]:
@@ -287,6 +297,15 @@ def _accumulate(v: Village, t0: float, t1: float) -> None:
     # Vitesse serveur : le temps s'écoule `server_speed` fois plus vite
     # (production ×N, durées ÷N) — équivaut à accélérer le temps.
     hours = (t1 - t0) / 3600.0 * v.server_speed
+
+    # Loyauté : régén +⅔ × niveau du bâtiment d'administration / h (vrai Travian,
+    # cf. engine.conquest). Sans résidence/palais (ex. après conquête : détruit),
+    # aucune régén ⇒ le village reste vulnérable jusqu'à reconstruction.
+    if v.loyalty < 100.0:
+        admin = admin_building_level(v)
+        if admin > 0:
+            v.loyalty = min(100.0, v.loyalty + (2.0 / 3.0) * admin * hours)
+
     prod = net_production(v)
     caps = capacities(v)
     for i in (WOOD, CLAY, IRON):

@@ -189,7 +189,12 @@ function render(v){
     h+=`<div class="res"><span class="ico">${RICON[i]}</span>
       <span class="amt">${v.resources[i]} <small>/ ${v.capacities[i]}</small></span>
       <span class="${p>=0?'prod-pos':'prod-neg'}">${p>=0?'+':''}${p}/h</span></div>`; }
-  h+=`<div class="res">👥 <b>${v.population}</b></div><span class="badge">⏩ ×${v.server_speed}</span>`;
+  h+=`<div class="res">👥 <b>${v.population}</b></div>`;
+  if(v.loyalty!==undefined && v.loyalty<100){
+    const col=v.loyalty<50?'#c0392b':'#b8860b';
+    h+=`<span class="badge" style="color:${col}" title="Loyauté (conquête)">🏳️ ${v.loyalty}%</span>`;
+  }
+  h+=`<span class="badge">⏩ ×${v.server_speed}</span>`;
   document.getElementById("bar").innerHTML=h;
 
   // Champs (1..18) + cœur du village
@@ -852,6 +857,14 @@ function fmtSiege(s){
   return parts.length?` · `+parts.join(" · "):"";
 }
 
+// Effet d'un administrateur (chef/sénateur) sur la loyauté de la cible.
+function fmtLoyalty(b){
+  const l=b.loyaute; if(!l) return "";
+  if(b.conquete) return ` · 👑 conquis ! (loyauté → 0)`;
+  if(l.bloque) return ` · 👑 ${l.chefs} chef(s) — conquête bloquée (${l.bloque})`;
+  return ` · 🏳️ loyauté ${l.avant}%→${l.apres}% (−${l.baisse}, ${l.chefs} chef(s))`;
+}
+
 async function loadReports(){
   const d=await (await fetch("/api/reports")).json();
   const reps=d.reports;
@@ -859,8 +872,9 @@ async function loadReports(){
   box.innerHTML=reps.length ? reps.map(r=>{ const b=r.body; let line="";
     const caps=b.captures?b.captures.reduce((a,c)=>a+c,0):0;
     const sg=fmtSiege(b.siege);
-    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(caps?` · 🪤 ${caps} piégé(s)`:"")+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"")+sg;
-    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(caps?` · 🪤 ${caps} capturé(s)`:"")+(b.hero_def?" · 🦸 héros en défense":"")+sg;
+    const ly=fmtLoyalty(b);
+    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(caps?` · 🪤 ${caps} piégé(s)`:"")+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"")+sg+ly;
+    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(caps?` · 🪤 ${caps} capturé(s)`:"")+(b.hero_def?" · 🦸 héros en défense":"")+sg+ly;
     else if(b.type==="oasis"){ const cq=b.conquete; line=`pertes ${b.pertes_pct}%${b.cleared?" · 🎉 oasis nettoyée":" · animaux restants"}`+(cq&&cq.conquered?` · 🏞️ volée à ${cq.from} → ${cq.village}`:(cq&&cq.freed?` · 🏳️ libérée de ${cq.from}`:""))+(b.hero?` · 🦸${b.hero_alive?"":" 💀"}`:""); }
     else if(b.type==="oasis_lost") line=`🌴 ${b.village} perd l'oasis (${b.coords[0]}|${b.coords[1]})`;
     else if(b.type==="release") line=`🕊️ libérés de ${b.de}`;

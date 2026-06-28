@@ -225,6 +225,7 @@ def serialize(v: V.Village) -> dict:
         "resources": [round(r) for r in v.resources], "capacities": caps,
         "production": [round(p, 1) for p in prod], "population": V.population(v),
         "troop_upkeep": V.troop_upkeep(v),
+        "loyalty": round(v.loyalty),
         "queue_len": len(v.queue), "max_queue": v.max_queue, "slots": slots,
         "troops": troops, "training": training, "military": military,
         "movements": moves, "market": market, "hero_here": hero_here, "siege": siege,
