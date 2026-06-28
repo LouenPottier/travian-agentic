@@ -136,9 +136,12 @@ Phase 3 en cours (livrée incrémentalement) :
   (XP, ressources, perte de santé, drop d'objet) appliquée au retour. **Objets** : 6 emplacements
   d'équipement + consommables (soin), bonus cumulés dans `effective()`. Intégration combat via
   champs neutres ajoutés à `combat.Off`/`combat.Place` (pas de régression `test_combat`). ⚠️
-  **Kirilloid ne modélise RIEN de tout cela** → toutes les valeurs (santé, XP, force/point,
-  bonus/point, production/point, butin, objets) sont des **approximations documentées** en tête
-  de `hero.py`/`items.py`. API `/api/hero[...]` ; UI : onglet 🦸 Héros (état, attributs,
+  **Kirilloid ne modélise RIEN de tout cela** → la plupart des valeurs (santé, force/point,
+  bonus/point, butin, objets) sont des **approximations documentées** en tête de `hero.py`/`items.py`.
+  Exceptions **fidèles au vrai T4** (recoupées) : la **production de ressources** = +10/h d'une
+  ressource par point, ou +3/h de **chaque** ressource par point si « réparti » (`PROD_PER_POINT_*`) ;
+  et la **production cesse quand le héros n'est pas présent** (`tick` ne crédite que `status=="home"`,
+  pas en aventure/au combat/mort). API `/api/hero[...]` ; UI : onglet 🦸 Héros (état, attributs,
   équipement/sac, aventures, résurrection) + cases « envoyer le héros » (rassemblement & carte).
 - ✅ **Occupation d'oasis** (`app/engine/oasis.py`, verrouillé par `tests/test_oasis.py`) :
   une fois les animaux nettoyés, **annexer** une oasis à un village pour créditer son bonus

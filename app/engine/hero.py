@@ -42,7 +42,12 @@ BASE_REGEN_PER_DAY = 10.0       # +10 %/jour de santé à vide d'objet (réel T4
 STRENGTH_PER_FIGHT = 100.0     # force de combat par point de « force » (att+déf)
 BASE_STRENGTH = 100.0          # force de combat de base du héros (niv 0)
 BONUS_PER_POINT = 0.002        # +0,2 %/point d'attaque ou de défense (réel T4)
-PROD_PER_POINT = 6             # +6 ressources/h par point de production (×serveur)
+# Production de ressources par point d'attribut (valeurs **exactes** du vrai Travian T4) :
+#   - ressource unique → +10/h de cette ressource par point ;
+#   - « réparti » (toutes) → +3/h de **chaque** ressource par point.
+# (Le total réparti, 4×3 = 12/pt, dépasse donc volontairement le mode unique, 10/pt.)
+PROD_PER_POINT_SINGLE = 10     # +10/h d'une ressource par point
+PROD_PER_POINT_EACH = 3        # +3/h de chaque ressource par point (mode réparti)
 HERO_SPEED = 7                 # vitesse de base du héros (cases/h, comme un fantassin)
 
 # Aventures
@@ -157,21 +162,31 @@ def effective(h: Hero) -> dict:
         "regen_per_day": BASE_REGEN_PER_DAY + eq.get("regen", 0.0),
         "speed": HERO_SPEED + eq.get("speed", 0.0),
         "xp_bonus": eq.get("xp_bonus", 0.0),
-        "production_per_hour": h.res_points * PROD_PER_POINT,
+        # Production **par ressource** /h (10/pt en mode unique, 3/pt en réparti).
+        "production_per_hour": _prod_per_resource(h),
         "res_choice": h.res_choice,
     }
 
 
+def _prod_per_resource(h: Hero) -> int:
+    """Production horaire **par ressource** : +10/pt si ressource unique, +3/pt si réparti."""
+    rate = PROD_PER_POINT_SINGLE if 0 <= h.res_choice <= 3 else PROD_PER_POINT_EACH
+    return h.res_points * rate
+
+
 def hero_production(h: Hero) -> list[float]:
-    """Production de ressources/h du héros (échelle de base, hors vitesse serveur)."""
-    total = h.res_points * PROD_PER_POINT
-    if total <= 0:
+    """Production de ressources/h du héros (échelle de base, hors vitesse serveur).
+
+    Vrai Travian T4 : ressource unique → +10/pt sur cette seule ressource ;
+    « réparti » → +3/pt sur **chacune** des 4 ressources."""
+    if h.res_points <= 0:
         return [0.0, 0.0, 0.0, 0.0]
+    per_res = float(_prod_per_resource(h))
     if 0 <= h.res_choice <= 3:
         out = [0.0, 0.0, 0.0, 0.0]
-        out[h.res_choice] = float(total)
+        out[h.res_choice] = per_res
         return out
-    return [total / 4.0] * 4  # réparti également (« toutes ressources »)
+    return [per_res] * 4  # +3/pt de chaque ressource (« toutes ressources »)
 
 
 # --- Production paresseuse : santé + ressources + aventure -------------------

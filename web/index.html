@@ -566,7 +566,7 @@ function renderHero(d){
       d.status==="home"?"au village":d.status==="adventure"?`en aventure (${fmtTimer(d.busy_in)})`:
       d.status==="attacking"?"au combat":d.status==="dead"?"💀 mort":d.status}</b></div>
     <div class="cost">🏠 ${d.home_village} · force ${d.effective.strength} · att +${d.effective.off_bonus}% · déf +${d.effective.def_bonus}%</div>
-    <div class="cost">régén ${d.effective.regen_per_day}/j · prod ${d.effective.production_per_hour}/h (${d.res_choice_label}) · vitesse ${d.effective.speed}</div>`;
+    <div class="cost">régén ${d.effective.regen_per_day}/j · prod ${d.effective.production_per_hour}/h ${d.res_choice<0?"de chaque":""}(${d.res_choice_label}) · vitesse ${d.effective.speed}</div>`;
   if(d.status==="dead") h+=`<button onclick="reviveHero()">⚰️ Ressusciter (${fmtCost(d.revive_cost)})</button>`;
   h+=`</div>`;
   // Attributs
