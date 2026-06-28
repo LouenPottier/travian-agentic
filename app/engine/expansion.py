@@ -109,16 +109,23 @@ def expansion_status(player_id: int, now: float | None = None) -> dict:
     now = now or _time.time()
     culture = accumulate_culture(player_id, now)
     n_villages = len(store.player_villages(player_id))
+    # Fondations déjà en route : chaque train de colons réserve un emplacement
+    # d'expansion ET le palier de culture du village qu'il va fonder, tant qu'il
+    # n'est pas arrivé. Sinon on dépasserait son quota en lançant plusieurs colons
+    # en parallèle (slot/culture n'étant consommés qu'à l'arrivée) — infidèle à Travian.
+    pending = store.pending_settlements(player_id)
     slots = expansion_slots(player_id)
-    used = n_villages - 1                       # la capitale ne consomme pas de slot
-    next_cost = culture_needed(n_villages + 1)
+    used = (n_villages - 1) + pending           # capitale gratuite ; +1 par colon en route
+    next_village = n_villages + pending + 1
+    next_cost = culture_needed(next_village)
     return {
         "culture": round(culture),
         "culture_per_day": player_culture_per_day(player_id),
         "villages": n_villages,
+        "pending_settlements": pending,
         "slots_total": slots,
         "slots_free": max(0, slots - used),
-        "next_village": n_villages + 1,
+        "next_village": next_village,
         "culture_needed": next_cost,
         "can_settle": (slots - used) > 0 and culture >= next_cost,
     }

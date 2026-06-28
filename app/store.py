@@ -257,6 +257,20 @@ def merchants_out(village_id: int) -> int:
     return row["n"]
 
 
+def pending_settlements(player_id: int) -> int:
+    """Nombre de trains de colons d'un joueur **en route** vers une fondation
+    (mouvements `settle` en phase aller). Sert à réserver l'emplacement
+    d'expansion et le seuil de culture tant que la fondation n'a pas eu lieu :
+    sans ça, on pourrait dépasser son quota en lançant plusieurs colons en
+    parallèle (le slot/la culture n'étant consommés qu'à l'arrivée)."""
+    with connect() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM movements "
+            "WHERE owner_id=? AND kind='settle' AND phase='outbound'",
+            (player_id,)).fetchone()
+    return row["n"]
+
+
 def due_movements(now: float) -> list[dict]:
     with connect() as c:
         rows = c.execute("SELECT * FROM movements WHERE arrive_at<=? ORDER BY arrive_at",

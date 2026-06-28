@@ -130,6 +130,15 @@ Phase 3 en cours (livrée incrémentalement) :
   seuil de points** : `CULTURE_NEEDED` = approximation documentée (tables communautaires T4.6),
   extrapolation cubique au-delà. API `/api/expansion` + `/api/village/{id}/settle` ; UI : modale
   de vallée libre (carte) → « Fonder un village ici » si culture + slot dispo.
+  ✅ **Réservation des fondations en vol** (`store.pending_settlements`, exposé par
+  `expansion_status`, verrouillé par `test_expansion.test_pending_settlement_reserves_slot`/
+  `test_failed_settlement_frees_slot`) : chaque train de colons `settle` en phase aller
+  **réserve** un emplacement d'expansion **et** le palier de culture du village qu'il fondera,
+  tant qu'il n'est pas arrivé. Sans ça (slot/culture consommés seulement à l'arrivée), on
+  dépassait son quota en lançant plusieurs colons en parallèle — infidèle. Une fondation
+  **échouée** (case prise/non-vallée) repasse en phase « back » ⇒ libère aussitôt le slot.
+  Cas **2 joueurs sur la même vallée** : déjà fidèle (résolution sérialisée sous `_PROCESS_LOCK`,
+  tri `due_movements` par `arrive_at` ⇒ premier arrivé fonde, le second rentre « Fondation impossible »).
 - ✅ **Héros / aventures / objets** (`app/engine/hero.py`, `app/data/items.py`, verrouillé par
   `tests/test_hero.py`) : **un héros par joueur** (table `heroes`, blob JSON). Santé 0..100
   (régén paresseuse base+objets), **XP→niveau** (`xp_threshold`, 4 points/niveau), **attributs**

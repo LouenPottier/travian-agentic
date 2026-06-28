@@ -813,7 +813,9 @@ async function loadSettleBox(x,y){
   if(!LAST || !LAST.is_own){ box.innerHTML="Sélectionne un de tes villages pour fonder ici."; return; }
   let h=`📜 Culture : <b>${e.culture}</b>/${e.culture_needed} (village ${e.next_village}) · `+
         `emplacements libres : <b>${e.slots_free}</b>/${e.slots_total} · +${e.culture_per_day}/j<br>`;
-  if(e.slots_free<=0) h+=`<span style="opacity:.8">Construis/améliore une résidence (niv 10) ou un palais pour débloquer un emplacement.</span>`;
+  if(e.pending_settlements>0) h+=`<span style="opacity:.8">${e.pending_settlements} colon(s) déjà en route (emplacement réservé jusqu'à la fondation).</span><br>`;
+  if(e.slots_free<=0 && e.pending_settlements<=0) h+=`<span style="opacity:.8">Construis/améliore une résidence (niv 10) ou un palais pour débloquer un emplacement.</span>`;
+  else if(e.slots_free<=0) ;  // slot occupé par un colon en route : message déjà affiché ci-dessus
   else if(e.culture<e.culture_needed) h+=`<span style="opacity:.8">Pas encore assez de points de culture.</span>`;
   else h+=`<button onclick="settleHere()">🏕️ Fonder un village ici (3 colons)</button>`;
   box.innerHTML=h; box.style.opacity=1;
