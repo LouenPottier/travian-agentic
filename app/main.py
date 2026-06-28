@@ -23,6 +23,9 @@ from app.engine import village as V
 from app.engine import movement as M
 from app.engine import world as W
 from app.engine import effects as EFF
+from app.engine import hero as HERO
+from app.engine import expansion as EXP
+from app.data import items as IT
 
 app = FastAPI(title="Travian local — T4.6")
 
@@ -67,9 +70,26 @@ def seed_world() -> None:
     store.insert_village(V.new_village(
         "Camp teuton", Tribe.TEUTONS, server_speed=SERVER_SPEED,
         x=nx, y=ny, player_id=npc, is_capital=True))
+    # Héros du joueur, rattaché à sa capitale.
+    cap = store.player_villages(HUMAN_PLAYER_ID)[0]
+    HERO.get_or_create(HUMAN_PLAYER_ID, cap)
 
 
 seed_world()
+
+
+def _tick_player(player_id: int, now: float) -> None:
+    """Avance l'état « joueur » : héros (santé/production/aventure), apparition
+    d'aventures, accumulation des points de culture."""
+    h = HERO.load(player_id)
+    if h is not None:
+        home = store.load_village(h.home_village_id)
+        if home is not None:
+            if HERO.tick(h, home, now):
+                store.save_village(home)
+            HERO.replenish_adventures(player_id, h, now)
+            HERO.save(h)
+    EXP.accumulate_culture(player_id, now)
 
 
 def _slot_type(idx: int) -> str:
@@ -123,15 +143,20 @@ def serialize(v: V.Village) -> dict:
                  "remaining": t.remaining, "next_in": round(t.next_finish - now)}
                 for t in v.training]
     military = []
+    # Seuls caserne/écurie/atelier réduisent le temps d'entraînement (train_bonus).
+    # La résidence n'a pas de réduction (son `benefit` renvoie un dict de slots).
+    TRAIN_BONUS_BUILDINGS = (B.BARRACKS, B.STABLES, B.WORKSHOP,
+                             B.GREAT_BARRACKS, B.GREAT_STABLES)
     for bid in (B.BARRACKS, B.STABLES, B.WORKSHOP, B.RESIDENCE):
         lvl = levels.get(bid, 0)
         if lvl < 1:
             continue
         b = BLD.get(bid)
+        factor = b.benefit(lvl) if bid in TRAIN_BONUS_BUILDINGS else 1.0
         military.append({
             "building_id": bid, "building": b.name, "level": lvl,
             "units": [{"index": i, "name": u.name, "cost": list(u.cost),
-                       "time": round(u.train_time * b.benefit(lvl) / v.server_speed),
+                       "time": round(u.train_time * factor / v.server_speed),
                        "researched": V.is_researched(v, i),
                        "research_required": V.needs_research(v, i)}
                       for i, u in V.trainable_units(v, bid)],
@@ -148,6 +173,15 @@ def serialize(v: V.Village) -> dict:
             entry["cargo"] = json.loads(m["loot"])  # ressources transportées
             entry["merchants"] = m["merchants"]
         moves.append(entry)
+
+    # Héros : présent dans ce village (rattaché ici et disponible) → l'UI propose
+    # de l'envoyer avec l'armée. On indique aussi son état succinct.
+    hero_here = None
+    h = HERO.load(v.player_id) if v.player_id is not None else None
+    if h is not None and h.home_village_id == v.id:
+        hero_here = {"name": h.name, "level": h.level,
+                     "health": round(h.health), "status": h.status,
+                     "available": h.status == "home" and h.health > 0}
 
     # Place de marché : niveau, marchands (total / libres), capacité par marchand.
     market = None
@@ -166,12 +200,15 @@ def serialize(v: V.Village) -> dict:
         "troop_upkeep": V.troop_upkeep(v),
         "queue_len": len(v.queue), "max_queue": v.max_queue, "slots": slots,
         "troops": troops, "training": training, "military": military,
-        "movements": moves, "market": market,
+        "movements": moves, "market": market, "hero_here": hero_here,
     }
 
 
 def _get(village_id: int) -> V.Village:
-    M.process_due(time.time())  # résout les mouvements arrivés (combats, retours)
+    now = time.time()
+    M.process_due(now)  # résout les mouvements arrivés (combats, retours, fondations)
+    if HUMAN_PLAYER_ID is not None:
+        _tick_player(HUMAN_PLAYER_ID, now)
     v = store.load_village(village_id)
     if v is None:
         raise HTTPException(status_code=404, detail="Village introuvable.")
@@ -184,6 +221,7 @@ class SendArmy(BaseModel):
     target_id: int | None = None       # cible village
     target_x: int | None = None        # cible oasis (coordonnées)
     target_y: int | None = None
+    with_hero: bool = False            # embarquer le héros (attaque/razzia)
 
 
 @app.get("/api/villages")
@@ -398,7 +436,8 @@ def send_army(village_id: int, body: SendArmy):
     units = (body.units + [0] * 10)[:10]
     try:
         info = M.send(village_id, body.target_id, HUMAN_PLAYER_ID, body.kind, units,
-                      target_x=body.target_x, target_y=body.target_y)
+                      target_x=body.target_x, target_y=body.target_y,
+                      with_hero=body.with_hero)
     except M.MoveError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "arrive_in": info["arrive_in"], "village": serialize(_get(village_id))}
@@ -442,9 +481,152 @@ def trade(village_id: int, body: SendResources):
             "village": serialize(_get(village_id))}
 
 
+# --- Héros, aventures, objets ------------------------------------------------
+def _hero_payload(h: HERO.Hero, now: float) -> dict:
+    eff = HERO.effective(h)
+    home = store.load_village(h.home_village_id)
+    res_names = ["bois", "argile", "fer", "céréales", "réparti"]
+    equipment = {slot: IT.item_dict(key) for slot, key in h.equipment.items()}
+    bag = [{**IT.item_dict(k), "qty": n} for k, n in h.bag.items() if IT.item_dict(k)]
+    advs = [{"id": a["id"], "x": a["x"], "y": a["y"], "difficulty": a["difficulty"]}
+            for a in store.adventures_for(h.player_id)]
+    return {
+        "name": h.name, "level": h.level, "experience": round(h.experience),
+        "xp_next": round(HERO.xp_threshold(h.level + 1)),
+        "xp_this": round(HERO.xp_threshold(h.level)),
+        "health": round(h.health, 1), "status": h.status,
+        "busy_in": max(0, round(h.busy_until - now)) if h.busy_until else 0,
+        "points": h.points,
+        "attrs": {"fight": h.fight, "off": h.off_points, "def": h.def_points,
+                  "res": h.res_points},
+        "res_choice": h.res_choice, "res_choice_label": res_names[h.res_choice if h.res_choice >= 0 else 4],
+        "effective": {"strength": round(eff["strength"]),
+                      "off_bonus": round(eff["off_bonus"] * 100, 1),
+                      "def_bonus": round(eff["def_bonus"] * 100, 1),
+                      "regen_per_day": round(eff["regen_per_day"], 1),
+                      "production_per_hour": round(eff["production_per_hour"], 1),
+                      "speed": round(eff["speed"], 1)},
+        "home_village_id": h.home_village_id,
+        "home_village": home.name if home else "?",
+        "equipment": equipment, "bag": bag, "adventures": advs,
+        "slots": IT.SLOT_LABELS,
+        "revive_cost": list(HERO.REVIVE_COST),
+    }
+
+
+@app.get("/api/hero")
+def hero_state():
+    now = time.time()
+    M.process_due(now)
+    _tick_player(HUMAN_PLAYER_ID, now)
+    h = HERO.load(HUMAN_PLAYER_ID)
+    if h is None:
+        raise HTTPException(status_code=404, detail="Pas de héros.")
+    return _hero_payload(h, now)
+
+
+def _hero_action(fn) -> dict:
+    """Exécute une action héros, persiste, renvoie l'état à jour."""
+    now = time.time()
+    M.process_due(now)
+    _tick_player(HUMAN_PLAYER_ID, now)
+    h = HERO.load(HUMAN_PLAYER_ID)
+    if h is None:
+        raise HTTPException(status_code=404, detail="Pas de héros.")
+    try:
+        fn(h)
+    except HERO.HeroError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    HERO.save(h)
+    return {"ok": True, "hero": _hero_payload(HERO.load(HUMAN_PLAYER_ID), now)}
+
+
+@app.post("/api/hero/allocate/{attr}/{amount}")
+def hero_allocate(attr: str, amount: int):
+    mapping = {"fight": "fight", "off": "off_points", "def": "def_points",
+               "res": "res_points"}
+    if attr not in mapping:
+        raise HTTPException(status_code=400, detail="Attribut inconnu.")
+    return _hero_action(lambda h: HERO.allocate(h, mapping[attr], amount))
+
+
+@app.post("/api/hero/res_choice/{choice}")
+def hero_res_choice(choice: int):
+    return _hero_action(lambda h: HERO.set_res_choice(h, choice))
+
+
+@app.post("/api/hero/equip/{key}")
+def hero_equip(key: str):
+    return _hero_action(lambda h: HERO.equip(h, key))
+
+
+@app.post("/api/hero/unequip/{slot}")
+def hero_unequip(slot: str):
+    return _hero_action(lambda h: HERO.unequip(h, slot))
+
+
+@app.post("/api/hero/use/{key}")
+def hero_use(key: str):
+    return _hero_action(lambda h: HERO.use_consumable(h, key))
+
+
+@app.post("/api/hero/adventure/{adventure_id}")
+def hero_adventure(adventure_id: int):
+    now = time.time()
+    M.process_due(now)
+    _tick_player(HUMAN_PLAYER_ID, now)
+    try:
+        info = HERO.send_to_adventure(HUMAN_PLAYER_ID, adventure_id, now)
+    except HERO.HeroError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "arrive_in": info["arrive_in"],
+            "hero": _hero_payload(HERO.load(HUMAN_PLAYER_ID), now)}
+
+
+@app.post("/api/hero/revive")
+def hero_revive():
+    now = time.time()
+    M.process_due(now)
+    _tick_player(HUMAN_PLAYER_ID, now)
+    try:
+        info = HERO.revive(HUMAN_PLAYER_ID, now)
+    except HERO.HeroError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "revive_in": info["revive_in"],
+            "hero": _hero_payload(HERO.load(HUMAN_PLAYER_ID), now)}
+
+
+# --- Expansion (colons / nouveau village) ------------------------------------
+@app.get("/api/expansion")
+def expansion_state():
+    now = time.time()
+    M.process_due(now)
+    return EXP.expansion_status(HUMAN_PLAYER_ID, now)
+
+
+class Settle(BaseModel):
+    x: int
+    y: int
+
+
+@app.post("/api/village/{village_id}/settle")
+def settle(village_id: int, body: Settle):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        info = EXP.send_settlers(village_id, body.x, body.y, HUMAN_PLAYER_ID)
+    except EXP.ExpansionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "arrive_in": info["arrive_in"], "village": serialize(_get(village_id))}
+
+
 @app.get("/api/reports")
 def reports():
-    M.process_due(time.time())
+    now = time.time()
+    M.process_due(now)
+    if HUMAN_PLAYER_ID is not None:
+        _tick_player(HUMAN_PLAYER_ID, now)
     return {"reports": store.reports_for(HUMAN_PLAYER_ID)}
 
 
