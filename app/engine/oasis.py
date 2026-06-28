@@ -12,8 +12,11 @@ documentées au même titre que le commerce ou le héros) :
   distance de Tchebychev ≤ `OASIS_RANGE` (carré de côté 2·R+1 centré sur le village).
 - Il faut d'abord en avoir **nettoyé les animaux** (combat d'oasis, cf. movement.py) ;
   une oasis encore gardée n'est pas annexable.
-- Une oasis déjà occupée (par soi ou un autre) ne peut être re-annexée. La **prise**
-  d'une oasis à un adversaire (re-conquête) n'est pas encore modélisée → affinage.
+- Une oasis déjà occupée ne peut pas être annexée *pacifiquement* (`occupy`). La **prise**
+  d'une oasis à un adversaire (re-conquête) se fait par **attaque victorieuse** : une fois la
+  case nettoyée de ses animaux, une attaque/razzia dont des troupes survivent détache l'oasis
+  de son détenteur et la rattache à un village éligible de l'attaquant (`conquer`, appelé depuis
+  `movement._resolve_oasis`). Faute de village éligible, l'oasis est seulement libérée.
 
 Le bonus de production de l'oasis est crédité au village via `village.gross_production`
 (le village stocke la liste de ses oasis dans `Village.oases`).
@@ -104,6 +107,63 @@ def abandon(village_id: int, x: int, y: int, player_id: int, now: float | None =
     store.save_village(v)
     store.set_tile_owner(x, y, None)
     return {"x": x, "y": y, "free_slots": free_slots(v)}
+
+
+def best_eligible_village(player_id: int, x: int, y: int,
+                          prefer_id: int | None = None) -> V.Village | None:
+    """Meilleur village du joueur pouvant accueillir l'oasis (x, y) : en portée,
+    manoir niv 10+, emplacement libre. Préfère `prefer_id`, puis le plus proche.
+    Renvoie None si aucun village n'est éligible."""
+    cands = []
+    for vid in store.player_villages(player_id):
+        v = store.load_village(vid)
+        if (v is not None and mansion_level(v) >= MANSION_MIN_LEVEL
+                and in_range(v, x, y) and free_slots(v) > 0):
+            cands.append(v)
+    if not cands:
+        return None
+    cands.sort(key=lambda v: (v.id != prefer_id, chebyshev(v.x, v.y, x, y)))
+    return cands[0]
+
+
+def conquer(tile: dict, origin: V.Village, now: float) -> dict:
+    """Vol d'une oasis ennemie après une attaque victorieuse (animaux nettoyés).
+
+    `origin` = village d'où part l'attaque. Détache l'oasis de son détenteur (qui
+    perd le bonus et est notifié) puis la rattache à un village éligible de
+    l'attaquant (préférence à `origin`). Si aucun n'est éligible (hors portée,
+    manoir trop bas, pas de slot), l'oasis est seulement **libérée**. Renvoie un
+    récap pour le rapport ; `conquered=False` si non rattachée."""
+    x, y = tile["x"], tile["y"]
+    prev_vid = tile.get("owner_id")
+    if prev_vid is None:
+        return {"conquered": False}
+    prev = store.load_village(prev_vid)
+    if prev is not None and prev.player_id == origin.player_id:
+        return {"conquered": False}  # déjà à nous : rien à voler
+
+    if prev is not None:
+        V.tick(prev, now)  # fige sa prod avant de retirer le bonus d'oasis
+        prev.oases = [o for o in prev.oases if not (o["x"] == x and o["y"] == y)]
+        store.save_village(prev)
+        store.add_report(prev.player_id, now, f"🌴 Oasis perdue ({x}|{y})",
+                         {"type": "oasis_lost", "coords": [x, y], "village": prev.name})
+    store.set_tile_owner(x, y, None)
+
+    nv = best_eligible_village(origin.player_id, x, y, prefer_id=origin.id)
+    if nv is None:
+        return {"conquered": False, "freed": True,
+                "from": prev.name if prev else "?"}
+    # Si c'est `origin` qui annexe, on mute l'objet vivant (que le mouvement
+    # ré-enregistre ensuite) pour éviter qu'un save ultérieur n'écrase l'annexion.
+    if nv.id == origin.id:
+        nv = origin
+    V.tick(nv, now)
+    nv.oases.append({"x": x, "y": y, "code": tile["layout"]})
+    store.save_village(nv)
+    store.set_tile_owner(x, y, nv.id)
+    return {"conquered": True, "village": nv.name,
+            "from": prev.name if prev else "?", "free_slots": free_slots(nv)}
 
 
 def eligible_villages(player_id: int, tile: dict) -> list[dict]:

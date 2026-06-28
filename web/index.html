@@ -686,7 +686,8 @@ function occupationBox(o,x,y){
   if(o.owner){
     if(o.owner.is_own) h+=`<div class="cost" style="margin-top:6px">Annexée par <b>${o.owner.name}</b>. Son bonus de production t'est crédité.</div>
       <button style="margin-top:6px" onclick="abandonOasis(${o.owner.id},${x},${y})">🏳️ Abandonner l'oasis</button>`;
-    else h+=`<div class="cost" style="margin-top:6px;opacity:.85">Occupée par <b>${o.owner.name}</b> (autre joueur).</div>`;
+    else h+=`<div class="cost" style="margin-top:6px;opacity:.85">Occupée par <b>${o.owner.name}</b> (autre joueur).</div>
+      <div class="cost" style="margin-top:4px;opacity:.7">⚔️ Une attaque/razzia victorieuse (ci-dessus) te la vole et la rattache à un village éligible (manoir niv 10+, ≤ 3 cases, slot libre).</div>`;
   } else if(o.total_animals>0){
     h+=`<div class="cost" style="margin-top:6px;opacity:.75">Nettoie d'abord les animaux (razzia/attaque) avant de pouvoir l'annexer.</div>`;
   } else if(o.eligible_villages && o.eligible_villages.length){
@@ -791,9 +792,12 @@ async function loadReports(){
   const reps=d.reports;
   const box=document.getElementById("reports");
   box.innerHTML=reps.length ? reps.map(r=>{ const b=r.body; let line="";
-    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"");
-    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(b.hero_def?" · 🦸 héros en défense":"");
-    else if(b.type==="oasis") line=`pertes ${b.pertes_pct}%${b.cleared?" · 🎉 oasis nettoyée":" · animaux restants"}`+(b.hero?` · 🦸${b.hero_alive?"":" 💀"}`:"");
+    const caps=b.captures?b.captures.reduce((a,c)=>a+c,0):0;
+    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(caps?` · 🪤 ${caps} piégé(s)`:"")+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"");
+    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(caps?` · 🪤 ${caps} capturé(s)`:"")+(b.hero_def?" · 🦸 héros en défense":"");
+    else if(b.type==="oasis"){ const cq=b.conquete; line=`pertes ${b.pertes_pct}%${b.cleared?" · 🎉 oasis nettoyée":" · animaux restants"}`+(cq&&cq.conquered?` · 🏞️ volée à ${cq.from} → ${cq.village}`:(cq&&cq.freed?` · 🏳️ libérée de ${cq.from}`:""))+(b.hero?` · 🦸${b.hero_alive?"":" 💀"}`:""); }
+    else if(b.type==="oasis_lost") line=`🌴 ${b.village} perd l'oasis (${b.coords[0]}|${b.coords[1]})`;
+    else if(b.type==="release") line=`🕊️ libérés de ${b.de}`;
     else if(b.type==="adventure") line=`⭐ +${b.xp} XP · 🪵${b.resources[0]} 🧱${b.resources[1]} ⛏️${b.resources[2]} 🌾${b.resources[3]} · ❤️−${b.health_loss}`+(b.item?` · 🎁 ${b.item}`:"")+(b.died?" · 💀 mort":"");
     else if(b.type==="settle") line=b.ok?`🏕️ ${b.name} fondé en (${b.coords[0]}|${b.coords[1]})`:`fondation impossible (${b.coords[0]}|${b.coords[1]})`;
     else line="renfort";

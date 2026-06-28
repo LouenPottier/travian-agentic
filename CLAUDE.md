@@ -136,8 +136,12 @@ Phase 3 en cours (livrée incrémentalement) :
   `/api/village/{id}/oasis/occupy|abandon` ; UI : modale de case (carte) → « Annexer depuis
   {village} » / « Abandonner », marqueur sur la grille, récap dans la modale du manoir. ⚠️
   **Kirilloid ne modélise PAS l'occupation** → seuils de manoir et portée = approximations
-  documentées (`oasis.py`). ⬜ **Re-conquête** d'une oasis ennemie (vol entre joueurs) : non
-  modélisée, à faire.
+  documentées (`oasis.py`). ✅ **Re-conquête** d'une oasis ennemie (`oasis.conquer`, appelé depuis
+  `movement._resolve_oasis`, verrouillé par `tests/test_oasis.test_reconquer_enemy_oasis`) : une
+  **attaque/razzia victorieuse** (case nettoyée + troupes survivantes) détache l'oasis de son
+  détenteur (notifié) et la rattache à un village éligible de l'attaquant (`best_eligible_village`,
+  préférence à l'origine ; sinon oasis seulement libérée). UI : récap dans le rapport + indice dans
+  la modale de case. L'occupation *pacifique* (`occupy`) reste réservée aux oasis libres.
 - ⬜ **Combat héros — affinages** : le héros n'est embarqué que depuis son village d'attache
   (pas de relais entre villages) ; pas encore de monture→cavalerie en combat, ni de prise en
   compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.

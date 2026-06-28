@@ -308,6 +308,14 @@ def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
         hero_alive = not H.apply_combat(att_hero, res.off_losses, killed, now)
         H.save(att_hero)
 
+    # Re-conquête : oasis tenue par un autre joueur, nettoyée, attaque victorieuse
+    # (des troupes survivent) ⇒ on la lui vole au profit d'un village éligible.
+    conquest = None
+    if (tile.get("owner_id") is not None and sum(animals_after) == 0
+            and sum(survivors) > 0):
+        from app.engine import oasis as O
+        conquest = O.conquer(tile, origin, now)
+
     label = W.oasis_label(tile["layout"])
     store.add_report(origin.player_id, now,
                      f"🐾 Attaque d'oasis ({tile['x']}|{tile['y']})", {
@@ -318,6 +326,7 @@ def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
                          "animaux_avant": W.animal_breakdown(animals),
                          "animaux_apres": W.animal_breakdown(animals_after),
                          "cleared": sum(animals_after) == 0,
+                         "conquete": conquest,
                          "hero": att_hero is not None, "hero_alive": hero_alive})
     return survivors, hero_alive
 
