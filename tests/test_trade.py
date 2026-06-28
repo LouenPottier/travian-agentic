@@ -89,5 +89,34 @@ def main():
     print("\n✅ Commerce complet (envoi → marchands → livraison plafonnée → retour) validé")
 
 
+def test_trade_route():
+    """Route commerciale récurrente : envoi périodique automatique (déclenché au
+    passage de `next_run`), réessai si manque de ressources/marchands, suppression."""
+    store.DB_PATH = Path(tempfile.mkdtemp()) / "trade_route.db"
+    pa, oid, tid = setup()
+    now = time.time()
+    eff = 10 * 3600 / 100                 # intervalle effectif : 10h ÷ vitesse 100 = 360 s
+    M.create_trade_route(oid, tid, pa, [300, 0, 0, 0], 10, now=now)
+
+    wood0 = store.load_village(oid).resources[0]
+    M.process_due(now + 1)               # next_run = now ⇒ premier envoi immédiat
+    o1 = store.load_village(oid)
+    assert o1.resources[0] <= wood0 - 250, (wood0, o1.resources[0])
+    assert any(m["kind"] == "trade" for m in store.movements_for(oid))
+    r = store.trade_routes_for(oid)[0]
+    assert r["next_run"] > now + 1, "next_run doit avancer après le tir"
+
+    # Plusieurs cycles : les livraisons s'accumulent côté cible.
+    for k in range(1, 5):
+        M.process_due(now + k * eff + 5)
+    deliveries = sum(1 for rp in store.reports_for(pa) if rp["body"].get("type") == "trade")
+    assert deliveries >= 2, deliveries
+
+    assert store.delete_trade_route(r["id"], oid) == 1
+    assert store.trade_routes_for(oid) == []
+    print(f"✅ route commerciale : {deliveries} livraisons récurrentes + suppression")
+
+
 if __name__ == "__main__":
     main()
+    test_trade_route()

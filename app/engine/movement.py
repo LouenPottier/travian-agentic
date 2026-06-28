@@ -112,6 +112,57 @@ def send_resources(origin_id: int, target_id: int, player_id: int,
     return {"id": mid, "arrive_in": round(secs), "merchants": need}
 
 
+# --- Routes commerciales récurrentes ----------------------------------------
+# Une route renvoie périodiquement une cargaison fixe d'un village vers un autre.
+# Elle se déclenche au passage de `next_run` (sim paresseuse), via la même
+# machinerie que `send_resources` (marchands, capacité, trajet, plafonnement).
+# La cadence (heures de temps de base) est divisée par la vitesse serveur, comme
+# toutes les durées. Si un cycle n'a pas assez de ressources/marchands, il est
+# simplement sauté (réessai au cycle suivant).
+def create_trade_route(origin_id: int, target_id: int, player_id: int,
+                       amounts: list[int], interval_hours: float,
+                       now: float | None = None) -> dict:
+    now = now or _time.time()
+    origin = store.load_village(origin_id)
+    if origin is None or origin.player_id != player_id:
+        raise MoveError("Village invalide.")
+    if merchants_total(origin) < 1:
+        raise MoveError("Construis une place de marché pour commercer.")
+    target = store.load_village(target_id)
+    if target is None:
+        raise MoveError("Village cible introuvable.")
+    if origin_id == target_id:
+        raise MoveError("Cible identique à l'origine.")
+    amounts = [max(0, int(a)) for a in (amounts + [0, 0, 0, 0])[:4]]
+    if sum(amounts) <= 0:
+        raise MoveError("Aucune ressource à envoyer.")
+    if interval_hours <= 0:
+        raise MoveError("Intervalle invalide.")
+    # next_run = now ⇒ premier envoi dès le prochain passage (création réactive).
+    rid = store.insert_trade_route(origin_id, target_id, player_id, amounts,
+                                   interval_hours, now)
+    return {"id": rid}
+
+
+def _process_trade_routes_locked(now: float) -> None:
+    """Déclenche les routes commerciales arrivées à échéance (sous `_PROCESS_LOCK`)."""
+    for r in store.due_trade_routes(now):
+        origin = store.load_village(r["origin_id"])
+        if origin is None:
+            store.delete_trade_route(r["id"], r["origin_id"])
+            continue
+        effective = r["interval_hours"] * 3600.0 / max(1, origin.server_speed)
+        amounts = json.loads(r["amounts"])
+        try:
+            send_resources(r["origin_id"], r["target_id"], r["owner_id"], amounts, now)
+        except MoveError:
+            pass  # ressources/marchands indisponibles ce cycle : réessai au suivant
+        nxt = r["next_run"]
+        while nxt <= now:
+            nxt += effective
+        store.update_trade_route_next_run(r["id"], nxt)
+
+
 def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
          units: list[int], now: float | None = None,
          target_x: int | None = None, target_y: int | None = None,
@@ -204,62 +255,78 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None):
     défenseur (présent dans la cible) est chargé et renforce la défense.
     """
     from app.engine import hero as H
-    off = C.Off(units=UNITS[origin.tribe], numbers=list(units),
-                upgrades=list(origin.upgrades), pop=V.population(origin), kind=kind)
-    if att_hero is not None:
-        off.hero_power = H.combat_power(att_hero)
-        off.bonus = H.effective(att_hero)["off_bonus"]
-    deff = C.Defender(units=UNITS[target.tribe], numbers=list(target.troops),
-                      upgrades=list(target.upgrades))
-    place = _build_place(target)
+    # Pièges du trappeur (Gaulois) : capture pré-combat des assaillants. Jusqu'à
+    # `free_traps` unités sont retenues (réparties au prorata) et ne combattent pas ;
+    # le surplus livre bataille. Le héros n'est pas piégeable (il combat toujours).
+    trapped = V.distribute_traps(list(units), V.free_traps(target))
+    fight = [units[i] - trapped[i] for i in range(10)]
+    no_battle = sum(fight) == 0 and att_hero is None
 
-    # Héros défenseur : présent et vivant dans la cible.
-    def_hero = H.load(target.player_id)
-    if def_hero is not None and (def_hero.home_village_id != target.id
-                                 or def_hero.status != "home" or def_hero.health <= 0):
-        def_hero = None
-    if def_hero is not None:
-        place.def_extra += H.combat_power(def_hero)
-        place.def_bonus_extra = H.effective(def_hero)["def_bonus"]
-
-    res = C.combat(place, off, [deff])
-
-    survivors = [round(units[i] * (1 - res.off_losses)) for i in range(10)]
     def_before = list(target.troops)
-    target.troops = [round(target.troops[i] * (1 - res.def_losses)) for i in range(10)]
+    loot = [0, 0, 0, 0]
+    hero_alive = True
+    def_hero = None
+    off_losses = def_losses = 0.0
+
+    if not no_battle:
+        off = C.Off(units=UNITS[origin.tribe], numbers=list(fight),
+                    upgrades=list(origin.upgrades), pop=V.population(origin), kind=kind)
+        if att_hero is not None:
+            off.hero_power = H.combat_power(att_hero)
+            off.bonus = H.effective(att_hero)["off_bonus"]
+        deff = C.Defender(units=UNITS[target.tribe], numbers=list(target.troops),
+                          upgrades=list(target.upgrades))
+        place = _build_place(target)
+
+        # Héros défenseur : présent et vivant dans la cible.
+        def_hero = H.load(target.player_id)
+        if def_hero is not None and (def_hero.home_village_id != target.id
+                                     or def_hero.status != "home" or def_hero.health <= 0):
+            def_hero = None
+        if def_hero is not None:
+            place.def_extra += H.combat_power(def_hero)
+            place.def_bonus_extra = H.effective(def_hero)["def_bonus"]
+
+        res = C.combat(place, off, [deff])
+        off_losses, def_losses = res.off_losses, res.def_losses
+        target.troops = [round(target.troops[i] * (1 - def_losses)) for i in range(10)]
+
+    survivors = [round(fight[i] * (1 - off_losses)) for i in range(10)]
 
     # Butin : capacité de transport des survivants
     cap = sum(survivors[i] * UNITS[origin.tribe][i].capacity for i in range(10))
     avail = sum(target.resources)
-    loot = [0, 0, 0, 0]
     take = min(cap, avail)
     if avail > 0 and take > 0:
         for i in range(4):
             loot[i] = round(take * target.resources[i] / avail)
             target.resources[i] = max(0.0, target.resources[i] - loot[i])
+
+    # Les assaillants capturés deviennent prisonniers du village défenseur.
+    if sum(trapped) > 0:
+        V.add_prisoners(target, origin.player_id, origin.id, int(origin.tribe), trapped)
     store.save_village(target)
 
     # Héros : XP (unités ennemies tuées) + perte de santé (pertes de son camp).
-    hero_alive = True
-    att_killed = sum(units[i] - survivors[i] for i in range(10))
+    att_killed = sum(fight[i] - survivors[i] for i in range(10))
     def_killed = sum(def_before[i] - target.troops[i] for i in range(10))
     if att_hero is not None:
-        hero_alive = not H.apply_combat(att_hero, res.off_losses, def_killed, now)
+        hero_alive = not H.apply_combat(att_hero, off_losses, def_killed, now)
         H.save(att_hero)
     if def_hero is not None:
-        H.apply_combat(def_hero, res.def_losses, att_killed, now)
+        H.apply_combat(def_hero, def_losses, att_killed, now)
         H.save(def_hero)
 
-    # Rapports
+    # Rapports (captures = assaillants piégés ; survivants = ceux qui ont combattu)
     store.add_report(origin.player_id, now, f"⚔️ Attaque sur {target.name}", {
         "type": "offensive", "cible": target.name, "kind": kind,
-        "envoyees": list(units), "survivantes": survivors,
-        "pertes_pct": round(res.off_losses * 100), "butin": loot,
+        "envoyees": list(units), "survivantes": survivors, "captures": trapped,
+        "pertes_pct": round(off_losses * 100), "butin": loot,
         "hero": att_hero is not None, "hero_alive": hero_alive})
     store.add_report(target.player_id, now, f"🛡️ Défense de {target.name}", {
         "type": "defensive", "attaquant": origin.name, "kind": kind,
-        "def_avant": def_before, "def_apres": target.troops,
-        "pertes_pct": round(res.def_losses * 100), "butin_pille": loot,
+        "def_avant": def_before, "def_apres": target.troops, "captures": trapped,
+        "pertes_pct": round(def_losses * 100), "butin_pille": loot,
         "hero_def": def_hero is not None})
     return survivors, loot, hero_alive
 
@@ -292,6 +359,14 @@ def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
         hero_alive = not H.apply_combat(att_hero, res.off_losses, killed, now)
         H.save(att_hero)
 
+    # Re-conquête : oasis tenue par un autre joueur, nettoyée, attaque victorieuse
+    # (des troupes survivent) ⇒ on la lui vole au profit d'un village éligible.
+    conquest = None
+    if (tile.get("owner_id") is not None and sum(animals_after) == 0
+            and sum(survivors) > 0):
+        from app.engine import oasis as O
+        conquest = O.conquer(tile, origin, now)
+
     label = W.oasis_label(tile["layout"])
     store.add_report(origin.player_id, now,
                      f"🐾 Attaque d'oasis ({tile['x']}|{tile['y']})", {
@@ -302,6 +377,7 @@ def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
                          "animaux_avant": W.animal_breakdown(animals),
                          "animaux_apres": W.animal_breakdown(animals_after),
                          "cleared": sum(animals_after) == 0,
+                         "conquete": conquest,
                          "hero": att_hero is not None, "hero_alive": hero_alive})
     return survivors, hero_alive
 
@@ -321,6 +397,9 @@ def process_due(now: float | None = None) -> int:
 
 
 def _process_due_locked(now: float) -> int:
+    # Routes commerciales d'abord : leurs envois créent des mouvements traités
+    # ensuite (et leurs arrivées passées sont résolues dans la même passe).
+    _process_trade_routes_locked(now)
     count = 0
     for m in store.due_movements(now):
         count += 1

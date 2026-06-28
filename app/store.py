@@ -40,6 +40,7 @@ def village_to_dict(v: Village) -> dict:
         "traps": v.traps,
         "trap_queue": [[t.remaining, t.per_unit, t.next_finish] for t in v.trap_queue],
         "oases": v.oases,
+        "prisoners": v.prisoners,
     }
 
 
@@ -66,6 +67,7 @@ def village_from_row(row: sqlite3.Row) -> Village:
         upgrades=d.get("upgrades", [0] * 10), upgrade_queue=upgrade_queue,
         traps=d.get("traps", 0), trap_queue=trap_queue,
         oases=d.get("oases", []),
+        prisoners=d.get("prisoners", []),
     )
 
 
@@ -140,6 +142,17 @@ def init_db() -> None:
             difficulty TEXT NOT NULL,    -- normal | hard
             created_at REAL NOT NULL,
             state TEXT NOT NULL DEFAULT 'available'  -- available | done
+        );
+        -- Routes commerciales récurrentes : envoi périodique de ressources d'un
+        -- village vers un autre (déclenché au passage de `next_run`, cf. movement).
+        CREATE TABLE IF NOT EXISTS trade_routes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            owner_id INTEGER NOT NULL,
+            amounts TEXT NOT NULL,          -- json [4]
+            interval_hours REAL NOT NULL,   -- cadence en heures (temps de base, ÷vitesse serveur)
+            next_run REAL NOT NULL          -- date absolue du prochain envoi
         );
         """)
         # Migration douce des bases antérieures : colonnes ajoutées au fil des features
@@ -253,6 +266,44 @@ def movements_for(village_id: int) -> list[dict]:
             "SELECT * FROM movements WHERE origin_id=? OR target_id=? ORDER BY arrive_at",
             (village_id, village_id)).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- Routes commerciales récurrentes ----------------------------------------
+def insert_trade_route(origin_id, target_id, owner_id, amounts,
+                       interval_hours, next_run) -> int:
+    with connect() as c:
+        cur = c.execute(
+            "INSERT INTO trade_routes(origin_id,target_id,owner_id,amounts,"
+            "interval_hours,next_run) VALUES (?,?,?,?,?,?)",
+            (origin_id, target_id, owner_id, json.dumps(list(amounts)),
+             interval_hours, next_run))
+        return cur.lastrowid
+
+
+def trade_routes_for(origin_id: int) -> list[dict]:
+    with connect() as c:
+        rows = c.execute("SELECT * FROM trade_routes WHERE origin_id=? ORDER BY id",
+                         (origin_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def due_trade_routes(now: float) -> list[dict]:
+    with connect() as c:
+        rows = c.execute("SELECT * FROM trade_routes WHERE next_run<=? ORDER BY next_run",
+                         (now,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_trade_route_next_run(route_id: int, next_run: float) -> None:
+    with connect() as c:
+        c.execute("UPDATE trade_routes SET next_run=? WHERE id=?", (next_run, route_id))
+
+
+def delete_trade_route(route_id: int, origin_id: int) -> int:
+    with connect() as c:
+        cur = c.execute("DELETE FROM trade_routes WHERE id=? AND origin_id=?",
+                        (route_id, origin_id))
+        return cur.rowcount
 
 
 def add_report(player_id: int, created_at: float, title: str, body: dict) -> None:

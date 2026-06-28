@@ -85,7 +85,13 @@ Phase 3 en cours (livrée incrémentalement) :
   multipliée par la vitesse serveur (stocks à l'échelle de base ⇒ marchands aussi, équilibre réel).
   Marchands indisponibles jusqu'au retour à vide ; surplus perdu au-delà du stockage cible.
   API `/api/village/{id}/market` + `/api/village/{id}/trade` ; UI : panneau « Place de marché »
-  sous l'Armée. Verrouillé par `tests/test_trade.py`. Routes commerciales (récurrentes) : à faire.
+  sous l'Armée. Verrouillé par `tests/test_trade.py`. ✅ **Routes commerciales récurrentes**
+  (table `trade_routes`, `movement.create_trade_route`/`_process_trade_routes_locked`, verrouillé
+  par `tests/test_trade.test_trade_route`) : envoi périodique automatique d'une cargaison fixe
+  vers un village, déclenché au passage de `next_run` (cadence en heures ÷ vitesse serveur),
+  réutilisant la machinerie marchands de `send_resources` ; cycle **sauté** (réessai au suivant)
+  si ressources/marchands indisponibles. API `/api/village/{id}/trade_route[s]` (POST/GET/DELETE) ;
+  UI : section « Routes commerciales récurrentes » dans la modale du marché.
 - ✅ **Interfaces de bâtiments** : chaque bâtiment s'utilise via sa **modale** (clic), qui
   affiche son **effet au niveau courant → niveau suivant** (`app/engine/effects.py`) puis son
   panneau fonctionnel : caserne/écurie/atelier/résidence → entraînement, marché → commerce,
@@ -93,9 +99,17 @@ Phase 3 en cours (livrée incrémentalement) :
   l'entraînement des unités non basiques), **forge → amélioration** des unités (transmise au
   combat via `movement.py`, plafonnée par le niveau de la forge), **trappeur → pièges**. État
   persisté (`research`/`upgrades`/`traps` + files). Verrouillé par `tests/test_buildings.py`.
-  ⚠️ Pièges encore non pris en compte *dans la résolution de combat* (capture des assaillants) :
-  construction + capacité seulement, à câbler. Grande caserne/écurie : modale = amélioration
-  seule (remappage du producteur d'unités à faire).
+  ✅ **Pièges en combat** (`movement._resolve_battle`, verrouillé par `tests/test_buildings.py`) :
+  capture **pré-combat** des assaillants (modèle vrai Travian / TravianZ, kirilloid muet) — jusqu'à
+  `village.free_traps` unités retenues (réparties au prorata, `distribute_traps`), le surplus combat ;
+  capture totale ⇒ pas de bataille. Les capturés deviennent **prisonniers** du défenseur (`Village.prisoners`,
+  un piège occupé par unité), libérables (`/prisoners/{i}/release` ⇒ retour immédiat au propriétaire,
+  approximation). UI : prisonniers + bouton « Libérer » dans la modale du trappeur.
+  ✅ **Grande caserne / grande écurie** (`village.GREAT_TRAINERS`/`base_producer`, verrouillé par
+  `tests/test_buildings.test_great_barracks_trains`) : forment les **mêmes unités** que la caserne/écurie
+  de base, à **coût ×3** (vrai Travian ; kirilloid muet), via leur **propre file** et leur propre niveau
+  (réduction de temps indépendante ⇒ entraînement en parallèle). Leur modale ouvre désormais le panneau
+  d'entraînement (en plus de l'amélioration).
 - ✅ **Expansion 2ᵉ village** (`app/engine/expansion.py`, verrouillé par `tests/test_expansion.py`) :
   **points de culture** cumulés par *joueur* (table `players.culture`/`culture_at`, accumulation
   paresseuse = somme des `culture_at` des bâtiments de tous ses villages, ×vitesse serveur),
@@ -132,8 +146,12 @@ Phase 3 en cours (livrée incrémentalement) :
   `/api/village/{id}/oasis/occupy|abandon` ; UI : modale de case (carte) → « Annexer depuis
   {village} » / « Abandonner », marqueur sur la grille, récap dans la modale du manoir. ⚠️
   **Kirilloid ne modélise PAS l'occupation** → seuils de manoir et portée = approximations
-  documentées (`oasis.py`). ⬜ **Re-conquête** d'une oasis ennemie (vol entre joueurs) : non
-  modélisée, à faire.
+  documentées (`oasis.py`). ✅ **Re-conquête** d'une oasis ennemie (`oasis.conquer`, appelé depuis
+  `movement._resolve_oasis`, verrouillé par `tests/test_oasis.test_reconquer_enemy_oasis`) : une
+  **attaque/razzia victorieuse** (case nettoyée + troupes survivantes) détache l'oasis de son
+  détenteur (notifié) et la rattache à un village éligible de l'attaquant (`best_eligible_village`,
+  préférence à l'origine ; sinon oasis seulement libérée). UI : récap dans le rapport + indice dans
+  la modale de case. L'occupation *pacifique* (`occupy`) reste réservée aux oasis libres.
 - ⬜ **Combat héros — affinages** : le héros n'est embarqué que depuis son village d'attache
   (pas de relais entre villages) ; pas encore de monture→cavalerie en combat, ni de prise en
   compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.

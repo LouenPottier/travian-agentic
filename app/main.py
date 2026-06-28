@@ -154,15 +154,19 @@ def serialize(v: V.Village) -> dict:
     # La résidence n'a pas de réduction (son `benefit` renvoie un dict de slots).
     TRAIN_BONUS_BUILDINGS = (B.BARRACKS, B.STABLES, B.WORKSHOP,
                              B.GREAT_BARRACKS, B.GREAT_STABLES)
-    for bid in (B.BARRACKS, B.STABLES, B.WORKSHOP, B.RESIDENCE):
+    for bid in (B.BARRACKS, B.STABLES, B.WORKSHOP, B.RESIDENCE,
+                B.GREAT_BARRACKS, B.GREAT_STABLES):
         lvl = levels.get(bid, 0)
         if lvl < 1:
             continue
         b = BLD.get(bid)
         factor = b.benefit(lvl) if bid in TRAIN_BONUS_BUILDINGS else 1.0
+        # Grande caserne / grande écurie : mêmes unités, coût ×3 (cf. village.py).
+        mult = V.GREAT_COST_MULT if bid in V.GREAT_TRAINERS else 1
         military.append({
             "building_id": bid, "building": b.name, "level": lvl,
-            "units": [{"index": i, "name": u.name, "cost": list(u.cost),
+            "units": [{"index": i, "name": u.name,
+                       "cost": [c * mult for c in u.cost],
                        "time": round(u.train_time * factor / v.server_speed),
                        "researched": V.is_researched(v, i),
                        "research_required": V.needs_research(v, i)}
@@ -422,9 +426,19 @@ def upgrade_unit(village_id: int, unit_index: int):
     return {"ok": True, "village": serialize(v)}
 
 
+def _prisoner_view(p: dict) -> dict:
+    """Vue lisible d'un groupe de prisonniers (noms d'unités + village d'origine)."""
+    units = UNITS[p["tribe"]]
+    items = [{"name": units[i].name, "count": p["units"][i]}
+             for i in range(10) if p["units"][i] > 0]
+    owner = store.load_village(p["village_id"])
+    return {"village_id": p["village_id"], "owner": owner.name if owner else "?",
+            "total": sum(p["units"]), "units": items}
+
+
 @app.get("/api/village/{village_id}/trapper")
 def trapper(village_id: int):
-    """Trappeur : capacité de pièges, pièges construits / en cours, coût unitaire."""
+    """Trappeur : capacité de pièges, pièges construits / en cours, prisonniers retenus."""
     v = _get(village_id)
     if V.building_levels(v).get(B.TRAPPER, 0) < 1:
         raise HTTPException(status_code=400, detail="Pas de trappeur dans ce village.")
@@ -435,7 +449,33 @@ def trapper(village_id: int):
             "pending": V.traps_pending(v), "queue": pending,
             "free": V.trap_capacity(v) - V.traps_total(v),
             "trap_cost": list(V.TRAP_COST),
-            "trap_time": round(V.TRAP_TIME / v.server_speed)}
+            "trap_time": round(V.TRAP_TIME / v.server_speed),
+            "held": V.prisoners_count(v),
+            "prisoners": [_prisoner_view(p) for p in v.prisoners]}
+
+
+@app.post("/api/village/{village_id}/prisoners/{index}/release")
+def release_prisoners(village_id: int, index: int):
+    """Libère un groupe de prisonniers : retour immédiat à leur village d'origine
+    (approximation : le vrai Travian les renvoie en trajet)."""
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        p = V.release_prisoner(v, index)
+    except V.BuildError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    store.save_village(v)
+    owner = store.load_village(p["village_id"])
+    if owner is not None:
+        now = time.time()
+        V.tick(owner, now)
+        for i in range(10):
+            owner.troops[i] += p["units"][i]
+        store.save_village(owner)
+        store.add_report(owner.player_id, now, "🕊️ Prisonniers libérés",
+                         {"type": "release", "de": v.name, "unites": p["units"]})
+    return {"ok": True, "village": serialize(v)}
 
 
 @app.post("/api/village/{village_id}/traps/{count}")
@@ -471,6 +511,12 @@ class SendResources(BaseModel):
     amounts: list[int]  # [bois, argile, fer, céréales]
 
 
+class TradeRoute(BaseModel):
+    target_id: int
+    amounts: list[int]          # [bois, argile, fer, céréales]
+    interval_hours: float       # cadence (heures de temps de base)
+
+
 @app.get("/api/village/{village_id}/market")
 def market(village_id: int):
     """Infos de la place de marché + cibles d'envoi possibles (autres villages)."""
@@ -502,6 +548,46 @@ def trade(village_id: int, body: SendResources):
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "arrive_in": info["arrive_in"], "merchants": info["merchants"],
             "village": serialize(_get(village_id))}
+
+
+def _route_view(r: dict, now: float) -> dict:
+    target = store.load_village(r["target_id"])
+    return {"id": r["id"], "target_id": r["target_id"],
+            "target": target.name if target else "?",
+            "amounts": json.loads(r["amounts"]),
+            "interval_hours": r["interval_hours"],
+            "next_in": max(0, round(r["next_run"] - now))}
+
+
+@app.get("/api/village/{village_id}/trade_routes")
+def trade_routes(village_id: int):
+    """Routes commerciales récurrentes partant de ce village."""
+    v = _get(village_id)
+    now = time.time()
+    return {"routes": [_route_view(r, now) for r in store.trade_routes_for(v.id)]}
+
+
+@app.post("/api/village/{village_id}/trade_route")
+def create_trade_route(village_id: int, body: TradeRoute):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    amounts = (body.amounts + [0, 0, 0, 0])[:4]
+    try:
+        M.create_trade_route(village_id, body.target_id, HUMAN_PLAYER_ID,
+                             amounts, body.interval_hours)
+    except M.MoveError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "village": serialize(_get(village_id))}
+
+
+@app.delete("/api/village/{village_id}/trade_route/{route_id}")
+def delete_trade_route(village_id: int, route_id: int):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    store.delete_trade_route(route_id, v.id)
+    return {"ok": True, "village": serialize(v)}
 
 
 # --- Héros, aventures, objets ------------------------------------------------

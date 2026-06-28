@@ -120,7 +120,8 @@ const RICON = ["🪵","🧱","⛏️","🌾"];
 const Bk = {SMITHY:12, MAIN:14, RALLY:15, MARKET:16, EMBASSY:17, BARRACKS:18,
   STABLES:19, WORKSHOP:20, ACADEMY:21, RESIDENCE:24, PALACE:25, TRADE_OFFICE:27, TRAPPER:35,
   GREAT_BARRACKS:28, GREAT_STABLES:29, HERO_MANSION:36};
-const TRAIN_BUILDINGS = new Set([Bk.BARRACKS, Bk.STABLES, Bk.WORKSHOP, Bk.RESIDENCE]);
+const TRAIN_BUILDINGS = new Set([Bk.BARRACKS, Bk.STABLES, Bk.WORKSHOP, Bk.RESIDENCE,
+  Bk.GREAT_BARRACKS, Bk.GREAT_STABLES]);
 const FIELD_COLOR = {0:"#3f6b3a",1:"#b5713a",2:"#707682",3:"#c8a82f"};
 const FIELD_ICON  = {0:"🌲",1:"🧱",2:"⛏️",3:"🌾"};
 const BICON = {4:"🪚",5:"🧱",6:"🔥",7:"🌀",8:"🍞",9:"📦",10:"🥖",12:"🔨",13:"🏟️",14:"🏛️",
@@ -354,7 +355,36 @@ async function loadMarketPanel(P){
       <input id="trade_${i}" type="number" min="0" value="0" style="width:72px" oninput="updateMerchantHint()"></div>`;
   h+=`</div><div class="cost" id="merchantHint" style="margin:6px 0;opacity:.8"></div>
       <button onclick="sendResources()">📦 Envoyer les ressources</button>`;
+  // --- Routes commerciales récurrentes ---
+  const rr=await post(`/api/village/${CURRENT}/trade_routes`,{method:"GET"},"modalMsg");
+  h+=secTitle("Routes commerciales récurrentes");
+  if(rr&&rr.routes.length){
+    for(const r of rr.routes){
+      const desc=r.amounts.map((a,i)=>a?`${RICON[i]}${a}`:"").filter(Boolean).join(" ")||"—";
+      h+=`<div class="cost" style="margin-top:4px">🔁 ${desc} → <b>${r.target}</b> · toutes les ${r.interval_hours}h (prochain ${fmtTimer(r.next_in)})
+          <button onclick="deleteRoute(${r.id})" style="margin-left:6px">✖</button></div>`;
+    }
+  } else h+=`<div class="cost" style="opacity:.6">Aucune route.</div>`;
+  h+=`<div style="margin-top:6px">Vers : <select id="routeTarget">`+
+    d.targets.map(t=>`<option value="${t.id}">${t.is_own?"★ ":""}${t.name} (${t.x}|${t.y})</option>`).join("")+`</select></div>
+    <div class="bldlist">`;
+  for(let i=0;i<4;i++) h+=`<div class="bld"><div class="cost">${RICON[i]}</div>
+      <input id="route_${i}" type="number" min="0" value="0" style="width:64px"></div>`;
+  h+=`</div><div style="margin-top:4px">toutes les <input id="routeInterval" type="number" min="0.1" step="0.1" value="1" style="width:56px">h
+      <button onclick="createRoute()">🔁 Créer la route</button></div>`;
   P.innerHTML=h; restoreInputs(P,saved); updateMerchantHint();
+}
+async function createRoute(){
+  const amounts=[]; for(let i=0;i<4;i++){ const el=document.getElementById("route_"+i); amounts[i]=el?(parseInt(el.value)||0):0; }
+  const body={target_id:+document.getElementById("routeTarget").value, amounts,
+              interval_hours:parseFloat(document.getElementById("routeInterval").value)||1};
+  const d=await post(`/api/village/${CURRENT}/trade_route`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
+  if(d){ document.getElementById("msg").textContent="🔁 Route commerciale créée"; render(d.village); loadReports(); }
+}
+async function deleteRoute(id){
+  const d=await post(`/api/village/${CURRENT}/trade_route/${id}`,{method:"DELETE"},"modalMsg");
+  if(d) render(d.village);
 }
 function updateMerchantHint(){
   const m=MODAL_MARKET; if(!m) return;
@@ -465,7 +495,20 @@ async function loadTrapperPanel(P){
   if(d.free>0) h+=`<div style="margin-top:6px"><input id="trapN" type="number" min="1" max="${d.free}" value="${Math.min(10,d.free)}" style="width:70px">
       <button onclick="buildTraps()">Construire</button> <span class="cost" style="opacity:.6">(max ${d.free})</span></div>`;
   else h+=`<div class="cost" style="opacity:.6">Capacité de pièges atteinte.</div>`;
+  // Prisonniers retenus dans les pièges (assaillants capturés)
+  if(d.prisoners&&d.prisoners.length){
+    h+=secTitle(`Prisonniers (${d.held})`);
+    d.prisoners.forEach((p,i)=>{
+      const desc=p.units.map(u=>`${u.count} ${u.name}`).join(", ");
+      h+=`<div class="cost" style="margin-top:4px">🔒 ${desc} <span style="opacity:.6">(de ${p.owner})</span>
+          <button onclick="releasePrisoner(${i})" style="margin-left:6px">Libérer</button></div>`;
+    });
+  }
   P.innerHTML=h; restoreInputs(P,saved);
+}
+async function releasePrisoner(i){
+  const d=await post(`/api/village/${CURRENT}/prisoners/${i}/release`,null,"modalMsg");
+  if(d) render(d.village);
 }
 
 // --- Vue d'ensemble (lecture seule) : troupes, formation, mouvements ---------
@@ -673,7 +716,8 @@ function occupationBox(o,x,y){
   if(o.owner){
     if(o.owner.is_own) h+=`<div class="cost" style="margin-top:6px">Annexée par <b>${o.owner.name}</b>. Son bonus de production t'est crédité.</div>
       <button style="margin-top:6px" onclick="abandonOasis(${o.owner.id},${x},${y})">🏳️ Abandonner l'oasis</button>`;
-    else h+=`<div class="cost" style="margin-top:6px;opacity:.85">Occupée par <b>${o.owner.name}</b> (autre joueur).</div>`;
+    else h+=`<div class="cost" style="margin-top:6px;opacity:.85">Occupée par <b>${o.owner.name}</b> (autre joueur).</div>
+      <div class="cost" style="margin-top:4px;opacity:.7">⚔️ Une attaque/razzia victorieuse (ci-dessus) te la vole et la rattache à un village éligible (manoir niv 10+, ≤ 3 cases, slot libre).</div>`;
   } else if(o.total_animals>0){
     h+=`<div class="cost" style="margin-top:6px;opacity:.75">Nettoie d'abord les animaux (razzia/attaque) avant de pouvoir l'annexer.</div>`;
   } else if(o.eligible_villages && o.eligible_villages.length){
@@ -778,9 +822,12 @@ async function loadReports(){
   const reps=d.reports;
   const box=document.getElementById("reports");
   box.innerHTML=reps.length ? reps.map(r=>{ const b=r.body; let line="";
-    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"");
-    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(b.hero_def?" · 🦸 héros en défense":"");
-    else if(b.type==="oasis") line=`pertes ${b.pertes_pct}%${b.cleared?" · 🎉 oasis nettoyée":" · animaux restants"}`+(b.hero?` · 🦸${b.hero_alive?"":" 💀"}`:"");
+    const caps=b.captures?b.captures.reduce((a,c)=>a+c,0):0;
+    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(caps?` · 🪤 ${caps} piégé(s)`:"")+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"");
+    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(caps?` · 🪤 ${caps} capturé(s)`:"")+(b.hero_def?" · 🦸 héros en défense":"");
+    else if(b.type==="oasis"){ const cq=b.conquete; line=`pertes ${b.pertes_pct}%${b.cleared?" · 🎉 oasis nettoyée":" · animaux restants"}`+(cq&&cq.conquered?` · 🏞️ volée à ${cq.from} → ${cq.village}`:(cq&&cq.freed?` · 🏳️ libérée de ${cq.from}`:""))+(b.hero?` · 🦸${b.hero_alive?"":" 💀"}`:""); }
+    else if(b.type==="oasis_lost") line=`🌴 ${b.village} perd l'oasis (${b.coords[0]}|${b.coords[1]})`;
+    else if(b.type==="release") line=`🕊️ libérés de ${b.de}`;
     else if(b.type==="adventure") line=`⭐ +${b.xp} XP · 🪵${b.resources[0]} 🧱${b.resources[1]} ⛏️${b.resources[2]} 🌾${b.resources[3]} · ❤️−${b.health_loss}`+(b.item?` · 🎁 ${b.item}`:"")+(b.died?" · 💀 mort":"");
     else if(b.type==="settle") line=b.ok?`🏕️ ${b.name} fondé en (${b.coords[0]}|${b.coords[1]})`:`fondation impossible (${b.coords[0]}|${b.coords[1]})`;
     else line="renfort";

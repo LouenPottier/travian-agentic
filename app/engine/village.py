@@ -105,6 +105,10 @@ class Village:
     # village. Chaque entrée : {"x", "y", "code"} (code de bonus de la case, cf.
     # data/world). Le nombre maximal dépend du niveau du manoir (cf. engine.oasis).
     oases: list[dict] = field(default_factory=list)
+    # Prisonniers (pièges du trappeur gaulois) : assaillants capturés, retenus ici.
+    # Chaque entrée : {"player_id", "village_id", "tribe", "units": [10]}. Chaque
+    # unité retenue occupe un piège ; un groupe est libérable (retour au propriétaire).
+    prisoners: list[dict] = field(default_factory=list)
 
 
 # Emplacements : 1..18 champs de ressources, 19..38 centre du village,
@@ -424,11 +428,26 @@ def enqueue_new_building(v: Village, slot_index: int, building_id: int,
 
 
 # --- Entraînement de troupes -------------------------------------------------
+# Grande caserne / grande écurie : forment les **mêmes** unités que la caserne /
+# écurie de base, mais à coût ×3 (fidélité vrai Travian ; kirilloid ne chiffre pas
+# le ×3), via leur propre file et leur propre niveau (réduction de temps indépendante,
+# d'où l'entraînement en parallèle ⇒ production doublée).
+GREAT_TRAINERS = {B.GREAT_BARRACKS: B.BARRACKS, B.GREAT_STABLES: B.STABLES}
+GREAT_COST_MULT = 3
+
+
+def base_producer(building_id: int) -> int:
+    """Bâtiment dont les unités sont formées par `building_id` (grande caserne →
+    caserne, grande écurie → écurie). Pour un bâtiment normal : lui-même."""
+    return GREAT_TRAINERS.get(building_id, building_id)
+
+
 def trainable_units(v: Village, building_id: int) -> list[tuple[int, Unit]]:
     """Unités productibles dans `building_id` (bâtiment présent niv ≥ 1)."""
     if building_levels(v).get(building_id, 0) < 1:
         return []
-    return [(i, u) for i, u in enumerate(UNITS[v.tribe]) if u.producer == building_id]
+    prod = base_producer(building_id)
+    return [(i, u) for i, u in enumerate(UNITS[v.tribe]) if u.producer == prod]
 
 
 def _building_free_at(v: Village, building_id: int, now: float) -> float:
@@ -451,13 +470,15 @@ def enqueue_training(v: Village, building_id: int, unit_index: int, count: int,
     if level < 1:
         raise BuildError("Bâtiment d'entraînement absent.")
     units = UNITS[v.tribe]
-    if not (0 <= unit_index < len(units)) or units[unit_index].producer != building_id:
+    prod = base_producer(building_id)
+    if not (0 <= unit_index < len(units)) or units[unit_index].producer != prod:
         raise BuildError("Cette unité ne se forme pas ici.")
     if needs_research(v, unit_index) and not v.research[unit_index]:
         raise BuildError(f"{units[unit_index].name} : recherche en académie requise.")
 
     unit = units[unit_index]
-    cost = [unit.cost[i] * count for i in range(4)]
+    mult = GREAT_COST_MULT if building_id in GREAT_TRAINERS else 1
+    cost = [unit.cost[i] * count * mult for i in range(4)]
     if any(v.resources[i] < cost[i] for i in range(4)):
         raise BuildError("Ressources insuffisantes.")
     for i in range(4):
@@ -637,6 +658,65 @@ def enqueue_traps(v: Village, count: int, now: float | None = None) -> TrapOrder
     order = TrapOrder(remaining=count, per_unit=per_unit, next_finish=free + per_unit)
     v.trap_queue.append(order)
     return order
+
+
+# --- Pièges en combat : capture & prisonniers -------------------------------
+# Modèle de capture (fidèle au vrai Travian / référence TravianZ, kirilloid muet) :
+# à l'attaque, les pièges retiennent jusqu'à `free_traps` assaillants AVANT la
+# bataille (répartis au prorata des effectifs). Les capturés ne combattent pas et
+# ne meurent pas : ils deviennent prisonniers du village défenseur (un piège occupé
+# par unité). Le surplus livre bataille normalement.
+def prisoners_count(v: Village) -> int:
+    """Nombre total d'assaillants retenus prisonniers (un piège occupé par unité)."""
+    return sum(sum(p["units"]) for p in v.prisoners)
+
+
+def free_traps(v: Village) -> int:
+    """Pièges disponibles pour capturer = pièges posés − prisonniers déjà retenus."""
+    return max(0, v.traps - prisoners_count(v))
+
+
+def distribute_traps(units: list[int], n: int) -> list[int]:
+    """Répartit `n` captures au prorata des effectifs assaillants (plus grand reste),
+    plafonné par l'effectif de chaque type. Renvoie le vecteur capturé (10 indices)."""
+    total = sum(units)
+    n = min(max(0, n), total)
+    if n <= 0:
+        return [0] * len(units)
+    exact = [units[i] * n / total for i in range(len(units))]
+    caught = [int(e) for e in exact]
+    rem = n - sum(caught)
+    order = sorted(range(len(units)), key=lambda i: exact[i] - caught[i], reverse=True)
+    k = 0
+    while rem > 0 and k < 100 * len(units):
+        i = order[k % len(order)]
+        if caught[i] < units[i]:
+            caught[i] += 1
+            rem -= 1
+        k += 1
+    return caught
+
+
+def add_prisoners(v: Village, player_id: int, village_id: int,
+                  tribe: int, units: list[int]) -> None:
+    """Retient un groupe d'assaillants capturés, regroupé par village d'origine."""
+    if sum(units) <= 0:
+        return
+    for p in v.prisoners:
+        if p["village_id"] == village_id and p["player_id"] == player_id:
+            for i in range(10):
+                p["units"][i] += units[i]
+            return
+    v.prisoners.append({"player_id": player_id, "village_id": village_id,
+                        "tribe": int(tribe), "units": list(units)})
+
+
+def release_prisoner(v: Village, index: int) -> dict:
+    """Retire et renvoie un groupe de prisonniers (la réintégration chez le
+    propriétaire est faite par l'appelant, qui a accès au store)."""
+    if not (0 <= index < len(v.prisoners)):
+        raise BuildError("Prisonnier introuvable.")
+    return v.prisoners.pop(index)
 
 
 # --- Village de départ standard (4-4-4-6) -----------------------------------

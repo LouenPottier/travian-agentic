@@ -5,8 +5,11 @@ défense « adduite » selon la composition de l'attaque, bonus de moral, exposa
 d'immensité variable, bonus de muraille, béliers (démolition de mur) et catapultes
 (démolition de bâtiment), avec la formule d'amélioration de forge T4.
 
-Non encore géré (phases ultérieures) : héros, espionnage (scan), pièges gaulois,
-fête (party), métallurgie, bière teutonne (brew).
+Les pièges gaulois (capture pré-combat des assaillants) sont appliqués en amont,
+côté movement.py (cf. village.distribute_traps / add_prisoners), pas ici.
+
+Non encore géré (phases ultérieures) : espionnage (scan), fête (party),
+métallurgie, bière teutonne (brew).
 
 Vecteurs de validation (cf. tests) issus de t4/combat/combat.spec.ts.
 """

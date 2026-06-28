@@ -130,12 +130,47 @@ def test_abandon_releases():
     print("✅ abandon : oasis libérée, emplacement récupéré")
 
 
+def test_reconquer_enemy_oasis():
+    """Vol d'une oasis tenue par un autre joueur : une attaque victorieuse la
+    détache de son détenteur et la rattache à un village éligible de l'attaquant."""
+    from app.engine import movement as M
+    store.DB_PATH = Path(tempfile.mkdtemp()) / "oasis_conq.db"
+    store.init_db()
+    store.insert_tiles([{"x": 1, "y": 0, "kind": "oasis",
+                         "layout": "wood25", "animals": CLEARED}])
+    now = time.time()
+    pa = store.create_player("A", Tribe.GAULS)
+    pb = store.create_player("B", Tribe.GAULS)
+    a = V.new_village("A1", Tribe.GAULS, server_speed=100, x=0, y=0, player_id=pa)
+    a.slots[21] = V.Slot(B.HERO_MANSION, 10); a.resources = [50000.0] * 4
+    a = store.insert_village(a)
+    b = V.new_village("B1", Tribe.GAULS, server_speed=100, x=2, y=0, player_id=pb)
+    b.slots[21] = V.Slot(B.HERO_MANSION, 10); b.resources = [50000.0] * 4
+    b.troops[0] = 5                      # quelques phalanges pour l'attaque
+    b = store.insert_village(b)
+
+    OAS.occupy(a.id, 1, 0, pa, now)      # A annexe l'oasis
+    assert store.get_tile(1, 0)["owner_id"] == a.id
+
+    info = M.send(b.id, None, pb, "attack", [5] + [0] * 9, now, target_x=1, target_y=0)
+    M.process_due(now + info["arrive_in"] + 1)
+
+    assert store.get_tile(1, 0)["owner_id"] == b.id, store.get_tile(1, 0)["owner_id"]
+    assert store.load_village(a.id).oases == [], "A doit perdre l'oasis"
+    assert any(o["x"] == 1 and o["y"] == 0 for o in store.load_village(b.id).oases), \
+        "B doit gagner l'oasis"
+    assert any(r["body"].get("type") == "oasis_lost" for r in store.reports_for(pa)), \
+        "A doit être notifié de la perte"
+    print("✅ re-conquête : B vole l'oasis (1|0) à A (A notifié)")
+
+
 def main():
     test_slots_scale_with_mansion()
     test_occupy_credits_production()
     test_occupy_refusals()
     test_free_slot_and_already_occupied()
     test_abandon_releases()
+    test_reconquer_enemy_oasis()
     print("\n✅ Occupation d'oasis validée")
 
 
