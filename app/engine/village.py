@@ -428,11 +428,26 @@ def enqueue_new_building(v: Village, slot_index: int, building_id: int,
 
 
 # --- Entraînement de troupes -------------------------------------------------
+# Grande caserne / grande écurie : forment les **mêmes** unités que la caserne /
+# écurie de base, mais à coût ×3 (fidélité vrai Travian ; kirilloid ne chiffre pas
+# le ×3), via leur propre file et leur propre niveau (réduction de temps indépendante,
+# d'où l'entraînement en parallèle ⇒ production doublée).
+GREAT_TRAINERS = {B.GREAT_BARRACKS: B.BARRACKS, B.GREAT_STABLES: B.STABLES}
+GREAT_COST_MULT = 3
+
+
+def base_producer(building_id: int) -> int:
+    """Bâtiment dont les unités sont formées par `building_id` (grande caserne →
+    caserne, grande écurie → écurie). Pour un bâtiment normal : lui-même."""
+    return GREAT_TRAINERS.get(building_id, building_id)
+
+
 def trainable_units(v: Village, building_id: int) -> list[tuple[int, Unit]]:
     """Unités productibles dans `building_id` (bâtiment présent niv ≥ 1)."""
     if building_levels(v).get(building_id, 0) < 1:
         return []
-    return [(i, u) for i, u in enumerate(UNITS[v.tribe]) if u.producer == building_id]
+    prod = base_producer(building_id)
+    return [(i, u) for i, u in enumerate(UNITS[v.tribe]) if u.producer == prod]
 
 
 def _building_free_at(v: Village, building_id: int, now: float) -> float:
@@ -455,13 +470,15 @@ def enqueue_training(v: Village, building_id: int, unit_index: int, count: int,
     if level < 1:
         raise BuildError("Bâtiment d'entraînement absent.")
     units = UNITS[v.tribe]
-    if not (0 <= unit_index < len(units)) or units[unit_index].producer != building_id:
+    prod = base_producer(building_id)
+    if not (0 <= unit_index < len(units)) or units[unit_index].producer != prod:
         raise BuildError("Cette unité ne se forme pas ici.")
     if needs_research(v, unit_index) and not v.research[unit_index]:
         raise BuildError(f"{units[unit_index].name} : recherche en académie requise.")
 
     unit = units[unit_index]
-    cost = [unit.cost[i] * count for i in range(4)]
+    mult = GREAT_COST_MULT if building_id in GREAT_TRAINERS else 1
+    cost = [unit.cost[i] * count * mult for i in range(4)]
     if any(v.resources[i] < cost[i] for i in range(4)):
         raise BuildError("Ressources insuffisantes.")
     for i in range(4):

@@ -157,12 +157,33 @@ def test_traps_in_combat():
     print("✅ capture totale ⇒ pas de bataille ; libération vide les pièges")
 
 
+def test_great_barracks_trains():
+    """La grande caserne forme les mêmes unités que la caserne, à coût ×3, via sa
+    propre file (entraînement en parallèle de la caserne normale)."""
+    store.DB_PATH = Path(tempfile.mkdtemp()) / "great.db"
+    now = time.time()
+    v = _gaul(resources=100000.0, BARRACKS=5, GREAT_BARRACKS=3)
+    base = [i for i, _ in V.trainable_units(v, B.BARRACKS)]
+    great = [i for i, _ in V.trainable_units(v, B.GREAT_BARRACKS)]
+    assert base and base == great, (base, great)
+
+    u0 = V.UNITS[v.tribe][0]              # phalange : pas de recherche requise
+    res0 = list(v.resources)
+    V.enqueue_training(v, B.GREAT_BARRACKS, 0, 2, now)
+    for i in range(4):
+        assert res0[i] - v.resources[i] == u0.cost[i] * 2 * V.GREAT_COST_MULT, i
+    assert any(t.building_id == B.GREAT_BARRACKS for t in v.training)
+    print("✅ grande caserne : mêmes unités, coût ×3, file dédiée")
+
+
 def main():
     test_research_gating()
     test_smithy_combat()
     test_trapper()
     test_traps_in_combat()
-    print("\n✅ Mécaniques de bâtiments (académie / forge / trappeur / pièges) validées")
+    test_great_barracks_trains()
+    print("\n✅ Mécaniques de bâtiments (académie / forge / trappeur / pièges / "
+          "grande caserne) validées")
 
 
 if __name__ == "__main__":

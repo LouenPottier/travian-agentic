@@ -98,8 +98,12 @@ Phase 3 en cours (livrée incrémentalement) :
   `village.free_traps` unités retenues (réparties au prorata, `distribute_traps`), le surplus combat ;
   capture totale ⇒ pas de bataille. Les capturés deviennent **prisonniers** du défenseur (`Village.prisoners`,
   un piège occupé par unité), libérables (`/prisoners/{i}/release` ⇒ retour immédiat au propriétaire,
-  approximation). UI : prisonniers + bouton « Libérer » dans la modale du trappeur. Grande caserne/écurie :
-  modale = amélioration seule (remappage du producteur d'unités à faire).
+  approximation). UI : prisonniers + bouton « Libérer » dans la modale du trappeur.
+  ✅ **Grande caserne / grande écurie** (`village.GREAT_TRAINERS`/`base_producer`, verrouillé par
+  `tests/test_buildings.test_great_barracks_trains`) : forment les **mêmes unités** que la caserne/écurie
+  de base, à **coût ×3** (vrai Travian ; kirilloid muet), via leur **propre file** et leur propre niveau
+  (réduction de temps indépendante ⇒ entraînement en parallèle). Leur modale ouvre désormais le panneau
+  d'entraînement (en plus de l'amélioration).
 - ✅ **Expansion 2ᵉ village** (`app/engine/expansion.py`, verrouillé par `tests/test_expansion.py`) :
   **points de culture** cumulés par *joueur* (table `players.culture`/`culture_at`, accumulation
   paresseuse = somme des `culture_at` des bâtiments de tous ses villages, ×vitesse serveur),

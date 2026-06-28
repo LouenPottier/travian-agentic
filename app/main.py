@@ -154,15 +154,19 @@ def serialize(v: V.Village) -> dict:
     # La résidence n'a pas de réduction (son `benefit` renvoie un dict de slots).
     TRAIN_BONUS_BUILDINGS = (B.BARRACKS, B.STABLES, B.WORKSHOP,
                              B.GREAT_BARRACKS, B.GREAT_STABLES)
-    for bid in (B.BARRACKS, B.STABLES, B.WORKSHOP, B.RESIDENCE):
+    for bid in (B.BARRACKS, B.STABLES, B.WORKSHOP, B.RESIDENCE,
+                B.GREAT_BARRACKS, B.GREAT_STABLES):
         lvl = levels.get(bid, 0)
         if lvl < 1:
             continue
         b = BLD.get(bid)
         factor = b.benefit(lvl) if bid in TRAIN_BONUS_BUILDINGS else 1.0
+        # Grande caserne / grande écurie : mêmes unités, coût ×3 (cf. village.py).
+        mult = V.GREAT_COST_MULT if bid in V.GREAT_TRAINERS else 1
         military.append({
             "building_id": bid, "building": b.name, "level": lvl,
-            "units": [{"index": i, "name": u.name, "cost": list(u.cost),
+            "units": [{"index": i, "name": u.name,
+                       "cost": [c * mult for c in u.cost],
                        "time": round(u.train_time * factor / v.server_speed),
                        "researched": V.is_researched(v, i),
                        "research_required": V.needs_research(v, i)}
