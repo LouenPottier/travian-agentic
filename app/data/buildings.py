@@ -186,11 +186,16 @@ _BUILDINGS = [
     _b(id=B.BREWERY, name="Brasserie", cost=(1460, 930, 1250, 1740), k=1.40, u=6, cp=4,
        _time=F.make_time(11750, 2), benefit=F.percent(1), max_level=10,
        reqs={B.GRANARY: 20, B.RALLY_POINT: 10}, tribe=Tribe.TEUTONS),
+    # ⚠️ Écart Kirilloid corrigé (trappeur & manoir) : kirilloid écrit `time(2000, 0)`
+    # / `time(2300, 0)`, plaçant le 0 dans l'argument **k** (multiplicateur) au lieu de
+    # **b** (offset) → temps négatif/nul dès le niveau 2. L'intention est b=0 avec le k
+    # par défaut (1,16) : recoupé sur le vrai Travian (manoir niv 1→20 à BP 10 :
+    # 27:30 … 7:42:20, ratios = 1,16 ; 2300·0,719 = 1654 ≈ 27:30). Donc make_time(a, 1.16, 0).
     _b(id=B.TRAPPER, name="Trappeur", cost=(100, 100, 100, 100), k=1.28, u=4, cp=1,
-       _time=F.make_time(2000, 0), benefit=F.trapper_traps, reqs={B.RALLY_POINT: 1},
+       _time=F.make_time(2000, 1.16, 0), benefit=F.trapper_traps, reqs={B.RALLY_POINT: 1},
        tribe=Tribe.GAULS, multi=True),
     _b(id=B.HERO_MANSION, name="Manoir du héros", cost=(700, 670, 700, 240), k=1.33, u=2, cp=1,
-       _time=F.make_time(2300, 0), benefit=F.slots3, reqs={B.MAIN_BUILDING: 3, B.RALLY_POINT: 1}),
+       _time=F.make_time(2300, 1.16, 0), benefit=F.slots3, reqs={B.MAIN_BUILDING: 3, B.RALLY_POINT: 1}),
     _b(id=B.GREAT_WAREHOUSE, name="Grand entrepôt", cost=(650, 800, 450, 200), k=1.28, u=1, cp=1,
        _time=F.make_time(10875), benefit=F.great_capacity, reqs={B.MAIN_BUILDING: 10},
        multi=True, non_capital=True),

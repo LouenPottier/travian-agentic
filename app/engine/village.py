@@ -435,6 +435,22 @@ def enqueue_new_building(v: Village, slot_index: int, building_id: int,
 GREAT_TRAINERS = {B.GREAT_BARRACKS: B.BARRACKS, B.GREAT_STABLES: B.STABLES}
 GREAT_COST_MULT = 3
 
+# Colons & chefs (administrateurs) : dans units.py leur `producer` est la résidence,
+# mais le vrai Travian impose des règles distinctes (kirilloid ne chiffre pas ces unités) :
+#  - **colons** : formables en résidence OU palais, à partir du **niveau 10** (le niveau
+#    qui débloque le 1ᵉʳ emplacement d'expansion — cf. F.slots2/slots3, expansion.py) ;
+#  - **chefs/sénateurs** : formables **uniquement au palais** (jamais à la résidence),
+#    à partir du niveau 10. La résidence sert à fonder des villages, pas à les conquérir.
+SETTLER_TRAINERS = (B.RESIDENCE, B.PALACE)
+CHIEF_TRAINERS = (B.PALACE,)
+EXPANSION_MIN_LEVEL = 10
+
+# Seuls caserne/écurie/atelier (et leurs « grandes » variantes) réduisent le temps
+# d'entraînement (benefit = train_bonus). Résidence/palais : pas de réduction (leur
+# benefit renvoie un dict de slots, pas un facteur) → facteur 1,0.
+TRAIN_BONUS_BUILDINGS = (B.BARRACKS, B.STABLES, B.WORKSHOP,
+                         B.GREAT_BARRACKS, B.GREAT_STABLES)
+
 
 def base_producer(building_id: int) -> int:
     """Bâtiment dont les unités sont formées par `building_id` (grande caserne →
@@ -442,12 +458,42 @@ def base_producer(building_id: int) -> int:
     return GREAT_TRAINERS.get(building_id, building_id)
 
 
+def _expansion_trainers(u: Unit) -> tuple | None:
+    """Bâtiments où une unité d'expansion (colon/chef) se forme, ou None si l'unité
+    n'en est pas une (troupe militaire ordinaire)."""
+    if u.is_chief:
+        return CHIEF_TRAINERS
+    if u.is_settler:
+        return SETTLER_TRAINERS
+    return None
+
+
+def train_time_factor(building_id: int, level: int) -> float:
+    """Facteur de réduction du temps d'entraînement. Caserne/écurie/atelier (et grandes
+    variantes) : `train_bonus` (0,9**(niv−1)). Résidence/palais : 1,0 (pas de réduction)."""
+    if building_id in TRAIN_BONUS_BUILDINGS:
+        return BLD.get(building_id).benefit(level)
+    return 1.0
+
+
 def trainable_units(v: Village, building_id: int) -> list[tuple[int, Unit]]:
-    """Unités productibles dans `building_id` (bâtiment présent niv ≥ 1)."""
-    if building_levels(v).get(building_id, 0) < 1:
+    """Unités productibles dans `building_id` (bâtiment présent au niveau requis).
+
+    Colons/chefs : résidence/palais selon le type, et seulement à partir du niveau 10
+    (vrai Travian). Troupes militaires : caserne/écurie/atelier (+ grandes variantes)."""
+    level = building_levels(v).get(building_id, 0)
+    if level < 1:
         return []
     prod = base_producer(building_id)
-    return [(i, u) for i, u in enumerate(UNITS[v.tribe]) if u.producer == prod]
+    out = []
+    for i, u in enumerate(UNITS[v.tribe]):
+        trainers = _expansion_trainers(u)
+        if trainers is not None:
+            if building_id in trainers and level >= EXPANSION_MIN_LEVEL:
+                out.append((i, u))
+        elif u.producer == prod:
+            out.append((i, u))
+    return out
 
 
 def _building_free_at(v: Village, building_id: int, now: float) -> float:
@@ -470,13 +516,23 @@ def enqueue_training(v: Village, building_id: int, unit_index: int, count: int,
     if level < 1:
         raise BuildError("Bâtiment d'entraînement absent.")
     units = UNITS[v.tribe]
-    prod = base_producer(building_id)
-    if not (0 <= unit_index < len(units)) or units[unit_index].producer != prod:
+    if not (0 <= unit_index < len(units)):
+        raise BuildError("Cette unité ne se forme pas ici.")
+    unit = units[unit_index]
+    trainers = _expansion_trainers(unit)
+    if trainers is not None:
+        # Colon/chef : résidence ou palais selon le type, niveau 10+ (vrai Travian).
+        if building_id not in trainers:
+            raise BuildError("Cette unité ne se forme pas ici.")
+        if level < EXPANSION_MIN_LEVEL:
+            kind = "Le chef" if unit.is_chief else "Le colon"
+            raise BuildError(f"{kind} requiert {BLD.get(building_id).name} "
+                             f"niveau {EXPANSION_MIN_LEVEL}.")
+    elif unit.producer != base_producer(building_id):
         raise BuildError("Cette unité ne se forme pas ici.")
     if needs_research(v, unit_index) and not v.research[unit_index]:
-        raise BuildError(f"{units[unit_index].name} : recherche en académie requise.")
+        raise BuildError(f"{unit.name} : recherche en académie requise.")
 
-    unit = units[unit_index]
     mult = GREAT_COST_MULT if building_id in GREAT_TRAINERS else 1
     cost = [unit.cost[i] * count * mult for i in range(4)]
     if any(v.resources[i] < cost[i] for i in range(4)):
@@ -484,7 +540,7 @@ def enqueue_training(v: Village, building_id: int, unit_index: int, count: int,
     for i in range(4):
         v.resources[i] -= cost[i]
 
-    per_unit = unit.train_time * BLD.get(building_id).benefit(level) / v.server_speed
+    per_unit = unit.train_time * train_time_factor(building_id, level) / v.server_speed
     free = _building_free_at(v, building_id, now)
     order = TrainOrder(building_id=building_id, unit_index=unit_index,
                        remaining=count, per_unit=per_unit, next_finish=free + per_unit)
