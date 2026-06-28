@@ -112,6 +112,57 @@ def send_resources(origin_id: int, target_id: int, player_id: int,
     return {"id": mid, "arrive_in": round(secs), "merchants": need}
 
 
+# --- Routes commerciales récurrentes ----------------------------------------
+# Une route renvoie périodiquement une cargaison fixe d'un village vers un autre.
+# Elle se déclenche au passage de `next_run` (sim paresseuse), via la même
+# machinerie que `send_resources` (marchands, capacité, trajet, plafonnement).
+# La cadence (heures de temps de base) est divisée par la vitesse serveur, comme
+# toutes les durées. Si un cycle n'a pas assez de ressources/marchands, il est
+# simplement sauté (réessai au cycle suivant).
+def create_trade_route(origin_id: int, target_id: int, player_id: int,
+                       amounts: list[int], interval_hours: float,
+                       now: float | None = None) -> dict:
+    now = now or _time.time()
+    origin = store.load_village(origin_id)
+    if origin is None or origin.player_id != player_id:
+        raise MoveError("Village invalide.")
+    if merchants_total(origin) < 1:
+        raise MoveError("Construis une place de marché pour commercer.")
+    target = store.load_village(target_id)
+    if target is None:
+        raise MoveError("Village cible introuvable.")
+    if origin_id == target_id:
+        raise MoveError("Cible identique à l'origine.")
+    amounts = [max(0, int(a)) for a in (amounts + [0, 0, 0, 0])[:4]]
+    if sum(amounts) <= 0:
+        raise MoveError("Aucune ressource à envoyer.")
+    if interval_hours <= 0:
+        raise MoveError("Intervalle invalide.")
+    # next_run = now ⇒ premier envoi dès le prochain passage (création réactive).
+    rid = store.insert_trade_route(origin_id, target_id, player_id, amounts,
+                                   interval_hours, now)
+    return {"id": rid}
+
+
+def _process_trade_routes_locked(now: float) -> None:
+    """Déclenche les routes commerciales arrivées à échéance (sous `_PROCESS_LOCK`)."""
+    for r in store.due_trade_routes(now):
+        origin = store.load_village(r["origin_id"])
+        if origin is None:
+            store.delete_trade_route(r["id"], r["origin_id"])
+            continue
+        effective = r["interval_hours"] * 3600.0 / max(1, origin.server_speed)
+        amounts = json.loads(r["amounts"])
+        try:
+            send_resources(r["origin_id"], r["target_id"], r["owner_id"], amounts, now)
+        except MoveError:
+            pass  # ressources/marchands indisponibles ce cycle : réessai au suivant
+        nxt = r["next_run"]
+        while nxt <= now:
+            nxt += effective
+        store.update_trade_route_next_run(r["id"], nxt)
+
+
 def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
          units: list[int], now: float | None = None,
          target_x: int | None = None, target_y: int | None = None,
@@ -346,6 +397,9 @@ def process_due(now: float | None = None) -> int:
 
 
 def _process_due_locked(now: float) -> int:
+    # Routes commerciales d'abord : leurs envois créent des mouvements traités
+    # ensuite (et leurs arrivées passées sont résolues dans la même passe).
+    _process_trade_routes_locked(now)
     count = 0
     for m in store.due_movements(now):
         count += 1

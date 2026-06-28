@@ -355,7 +355,36 @@ async function loadMarketPanel(P){
       <input id="trade_${i}" type="number" min="0" value="0" style="width:72px" oninput="updateMerchantHint()"></div>`;
   h+=`</div><div class="cost" id="merchantHint" style="margin:6px 0;opacity:.8"></div>
       <button onclick="sendResources()">📦 Envoyer les ressources</button>`;
+  // --- Routes commerciales récurrentes ---
+  const rr=await post(`/api/village/${CURRENT}/trade_routes`,{method:"GET"},"modalMsg");
+  h+=secTitle("Routes commerciales récurrentes");
+  if(rr&&rr.routes.length){
+    for(const r of rr.routes){
+      const desc=r.amounts.map((a,i)=>a?`${RICON[i]}${a}`:"").filter(Boolean).join(" ")||"—";
+      h+=`<div class="cost" style="margin-top:4px">🔁 ${desc} → <b>${r.target}</b> · toutes les ${r.interval_hours}h (prochain ${fmtTimer(r.next_in)})
+          <button onclick="deleteRoute(${r.id})" style="margin-left:6px">✖</button></div>`;
+    }
+  } else h+=`<div class="cost" style="opacity:.6">Aucune route.</div>`;
+  h+=`<div style="margin-top:6px">Vers : <select id="routeTarget">`+
+    d.targets.map(t=>`<option value="${t.id}">${t.is_own?"★ ":""}${t.name} (${t.x}|${t.y})</option>`).join("")+`</select></div>
+    <div class="bldlist">`;
+  for(let i=0;i<4;i++) h+=`<div class="bld"><div class="cost">${RICON[i]}</div>
+      <input id="route_${i}" type="number" min="0" value="0" style="width:64px"></div>`;
+  h+=`</div><div style="margin-top:4px">toutes les <input id="routeInterval" type="number" min="0.1" step="0.1" value="1" style="width:56px">h
+      <button onclick="createRoute()">🔁 Créer la route</button></div>`;
   P.innerHTML=h; restoreInputs(P,saved); updateMerchantHint();
+}
+async function createRoute(){
+  const amounts=[]; for(let i=0;i<4;i++){ const el=document.getElementById("route_"+i); amounts[i]=el?(parseInt(el.value)||0):0; }
+  const body={target_id:+document.getElementById("routeTarget").value, amounts,
+              interval_hours:parseFloat(document.getElementById("routeInterval").value)||1};
+  const d=await post(`/api/village/${CURRENT}/trade_route`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
+  if(d){ document.getElementById("msg").textContent="🔁 Route commerciale créée"; render(d.village); loadReports(); }
+}
+async function deleteRoute(id){
+  const d=await post(`/api/village/${CURRENT}/trade_route/${id}`,{method:"DELETE"},"modalMsg");
+  if(d) render(d.village);
 }
 function updateMerchantHint(){
   const m=MODAL_MARKET; if(!m) return;

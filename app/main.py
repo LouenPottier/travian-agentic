@@ -511,6 +511,12 @@ class SendResources(BaseModel):
     amounts: list[int]  # [bois, argile, fer, céréales]
 
 
+class TradeRoute(BaseModel):
+    target_id: int
+    amounts: list[int]          # [bois, argile, fer, céréales]
+    interval_hours: float       # cadence (heures de temps de base)
+
+
 @app.get("/api/village/{village_id}/market")
 def market(village_id: int):
     """Infos de la place de marché + cibles d'envoi possibles (autres villages)."""
@@ -542,6 +548,46 @@ def trade(village_id: int, body: SendResources):
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "arrive_in": info["arrive_in"], "merchants": info["merchants"],
             "village": serialize(_get(village_id))}
+
+
+def _route_view(r: dict, now: float) -> dict:
+    target = store.load_village(r["target_id"])
+    return {"id": r["id"], "target_id": r["target_id"],
+            "target": target.name if target else "?",
+            "amounts": json.loads(r["amounts"]),
+            "interval_hours": r["interval_hours"],
+            "next_in": max(0, round(r["next_run"] - now))}
+
+
+@app.get("/api/village/{village_id}/trade_routes")
+def trade_routes(village_id: int):
+    """Routes commerciales récurrentes partant de ce village."""
+    v = _get(village_id)
+    now = time.time()
+    return {"routes": [_route_view(r, now) for r in store.trade_routes_for(v.id)]}
+
+
+@app.post("/api/village/{village_id}/trade_route")
+def create_trade_route(village_id: int, body: TradeRoute):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    amounts = (body.amounts + [0, 0, 0, 0])[:4]
+    try:
+        M.create_trade_route(village_id, body.target_id, HUMAN_PLAYER_ID,
+                             amounts, body.interval_hours)
+    except M.MoveError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "village": serialize(_get(village_id))}
+
+
+@app.delete("/api/village/{village_id}/trade_route/{route_id}")
+def delete_trade_route(village_id: int, route_id: int):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    store.delete_trade_route(route_id, v.id)
+    return {"ok": True, "village": serialize(v)}
 
 
 # --- Héros, aventures, objets ------------------------------------------------

@@ -85,7 +85,13 @@ Phase 3 en cours (livrée incrémentalement) :
   multipliée par la vitesse serveur (stocks à l'échelle de base ⇒ marchands aussi, équilibre réel).
   Marchands indisponibles jusqu'au retour à vide ; surplus perdu au-delà du stockage cible.
   API `/api/village/{id}/market` + `/api/village/{id}/trade` ; UI : panneau « Place de marché »
-  sous l'Armée. Verrouillé par `tests/test_trade.py`. Routes commerciales (récurrentes) : à faire.
+  sous l'Armée. Verrouillé par `tests/test_trade.py`. ✅ **Routes commerciales récurrentes**
+  (table `trade_routes`, `movement.create_trade_route`/`_process_trade_routes_locked`, verrouillé
+  par `tests/test_trade.test_trade_route`) : envoi périodique automatique d'une cargaison fixe
+  vers un village, déclenché au passage de `next_run` (cadence en heures ÷ vitesse serveur),
+  réutilisant la machinerie marchands de `send_resources` ; cycle **sauté** (réessai au suivant)
+  si ressources/marchands indisponibles. API `/api/village/{id}/trade_route[s]` (POST/GET/DELETE) ;
+  UI : section « Routes commerciales récurrentes » dans la modale du marché.
 - ✅ **Interfaces de bâtiments** : chaque bâtiment s'utilise via sa **modale** (clic), qui
   affiche son **effet au niveau courant → niveau suivant** (`app/engine/effects.py`) puis son
   panneau fonctionnel : caserne/écurie/atelier/résidence → entraînement, marché → commerce,
