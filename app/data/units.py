@@ -74,8 +74,25 @@ GAULS = [
     Unit("Colon",                   0,  80,  80,  5, (5500, 7000, 5300, 4900), 1, 22700, 3000, True, 0, B.RESIDENCE, is_settler=True),
 ]
 
+# Animaux sauvages des oasis (« Nature »). Ils ne servent qu'en défense :
+# producer = -1 (non entraînables), pas de coût/recherche. Stats T4 (att, déf
+# inf/cav, vitesse) issues de la table officielle des animaux Travian.
+NATURE = [
+    Unit("Rat",            10,  25,  20,  40, (0, 0, 0, 0), 1, 0,  0, True, 0, -1),
+    Unit("Araignée",       20,  35,  40,  40, (0, 0, 0, 0), 1, 0,  0, True, 0, -1),
+    Unit("Serpent",        60,  40,  60,  40, (0, 0, 0, 0), 1, 0,  0, True, 0, -1),
+    Unit("Chauve-souris",  80,  66,  50,  20, (0, 0, 0, 0), 1, 0,  0, True, 0, -1),
+    Unit("Sanglier",       50,  70,  33,  40, (0, 0, 0, 0), 2, 0,  0, True, 0, -1),
+    Unit("Loup",          100,  80,  70,  50, (0, 0, 0, 0), 1, 0,  0, True, 0, -1),
+    Unit("Ours",          250, 140, 200,  40, (0, 0, 0, 0), 3, 0,  0, True, 0, -1),
+    Unit("Crocodile",     450, 380, 240,  40, (0, 0, 0, 0), 3, 0,  0, True, 0, -1),
+    Unit("Tigre",         200, 170, 250,  40, (0, 0, 0, 0), 1, 0,  0, True, 0, -1),
+    Unit("Éléphant",      600, 440, 520,  25, (0, 0, 0, 0), 5, 0,  0, True, 0, -1),
+]
+
 UNITS: dict[Tribe, list[Unit]] = {
     Tribe.ROMANS: ROMANS,
     Tribe.TEUTONS: TEUTONS,
     Tribe.GAULS: GAULS,
+    Tribe.NATURE: NATURE,
 }

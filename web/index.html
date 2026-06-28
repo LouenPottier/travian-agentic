@@ -45,6 +45,17 @@
   #modal h3 { margin:0 0 12px; color:#e8d8a0; }
   .opt { display:flex; justify-content:space-between; align-items:center; gap:12px;
          padding:8px; border-bottom:1px solid #5a4330; }
+  #mapGrid { display:grid; gap:2px; justify-content:center; }
+  .mcell { width:38px; height:38px; border-radius:5px; border:1px solid #0004; cursor:pointer;
+           display:flex; flex-direction:column; align-items:center; justify-content:center;
+           font-size:16px; line-height:1; background:#4a3a26; position:relative; }
+  .mcell small { font-size:8px; opacity:.85; }
+  .mcell:hover { outline:2px solid #caa15a; z-index:1; }
+  .mcell.center { box-shadow:inset 0 0 0 2px #e8d8a0; }
+  .mcell.valley { background:#4a6534; }
+  .mcell.oasis  { background:#2e6b4a; }
+  .mcell.vmine  { background:#7a5a2a; }
+  .mcell.venemy { background:#7a2a2a; }
 </style>
 </head>
 <body>
@@ -53,6 +64,7 @@
   <div id="msg"></div>
   <nav id="tabs">
     <button id="tab_village" onclick="showTab('village')">🏰 Village</button>
+    <button id="tab_map" class="ghost" onclick="showTab('map')">🗺️ Carte</button>
     <button id="tab_reports" class="ghost" onclick="showTab('reports')">📜 Rapports
       <span id="repBadge" class="badge" style="display:none"></span></button>
   </nav>
@@ -64,6 +76,25 @@
     <div class="board" id="center" style="background:linear-gradient(#6b5436,#4a3a26)"></div>
     <h2 style="margin-top:20px">Armée</h2>
     <div id="army"></div>
+    <h2 style="margin-top:20px">Place de marché</h2>
+    <div id="market"></div>
+  </div>
+  <div id="mapView" style="display:none">
+    <h2>Carte du monde</h2>
+    <div id="mapControls" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <button class="ghost" onclick="panMap(0,1)">↑ N</button>
+      <button class="ghost" onclick="panMap(0,-1)">↓ S</button>
+      <button class="ghost" onclick="panMap(-1,0)">← O</button>
+      <button class="ghost" onclick="panMap(1,0)">→ E</button>
+      <button class="ghost" onclick="centerOnVillage()">🎯 Mon village</button>
+      <span style="margin-left:auto">Aller à (<input id="gotoX" type="number" value="0" style="width:60px">|<input id="gotoY" type="number" value="0" style="width:60px">)
+        <button onclick="gotoXY()">OK</button></span>
+    </div>
+    <div id="mapCenter" class="cost" style="opacity:.7;margin-bottom:6px"></div>
+    <div id="mapGrid"></div>
+    <div class="cost" style="margin-top:8px;opacity:.75">
+      ★ ton village · 🏠 autre joueur (clic → attaque) · 🌲🧱⛏️🌾 oasis selon son bonus
+      (🐾 = animaux à vaincre, clic → attaque) · · vallée libre</div>
   </div>
   <div id="reportsView" style="display:none">
     <h2>Rapports</h2>
@@ -183,6 +214,7 @@ function render(v){
   renderBuilds();
 
   renderArmy(v);
+  renderMarket(v);
 }
 
 let ACTIVE_BUILDS=[];
@@ -255,7 +287,12 @@ function renderArmy(v){
   if(v.training.length) h+=`<div class="bld"><div class="name">En formation</div>`+
     v.training.map(t=>`<div class="cost">${t.unit} ×${t.remaining} (${fmtTimer(t.next_in)})</div>`).join("")+`</div>`;
   if(v.movements&&v.movements.length) h+=`<div class="bld"><div class="name">Mouvements</div>`+
-    v.movements.map(m=>`<div class="cost">${m.dir==="in"?"➡️":"⬅️"} ${m.phase==="back"?"retour":m.kind} ×${m.n} (${fmtTimer(m.arrive_in)})</div>`).join("")+`</div>`;
+    v.movements.map(m=>{
+      const label = m.kind==="trade"
+        ? `📦 ${m.phase==="back"?"marchands (retour)":`livraison ${m.cargo.reduce((a,b)=>a+b,0)} (${m.merchants} march.)`}`
+        : `${m.phase==="back"?"retour":m.kind} ×${m.n}`;
+      return `<div class="cost">${m.dir==="in"?"➡️":"⬅️"} ${label} (${fmtTimer(m.arrive_in)})</div>`;
+    }).join("")+`</div>`;
   h+=`</div>`;
   if(v.is_own){
     for(const m of v.military){
@@ -283,14 +320,170 @@ function renderArmy(v){
     if(el.id && saved[el.id]!=null) el.value=saved[el.id]; });
 }
 
+function renderMarket(v){
+  const box=document.getElementById("market");
+  const saved={};
+  box.querySelectorAll("input,select").forEach(el=>{ if(el.id) saved[el.id]=el.value; });
+  const m=v.market;
+  if(!m){ box.innerHTML=`<div class="cost" style="opacity:.6">Construis une place de marché pour transférer des ressources.</div>`; return; }
+  if(!v.is_own){ box.innerHTML=`<div class="cost" style="opacity:.6">Marché niveau ${m.level}.</div>`; return; }
+  const tg=ALLV.filter(x=>x.id!==v.id);
+  let h=`<div class="cost" style="margin-bottom:6px">🧺 marchands : <b>${m.merchants_free}</b>/${m.merchants_total} libres ·
+      capacité <b>${m.capacity}</b>/marchand (max ${m.merchants_free*m.capacity} maintenant)</div>`;
+  if(!tg.length){ box.innerHTML=h+`<div class="cost" style="opacity:.6">Aucun autre village où envoyer.</div>`; return; }
+  h+=`<div style="margin:6px 0">Vers : <select id="tradeTarget">`+
+    tg.map(x=>`<option value="${x.id}">${x.name} (${x.x}|${x.y}) — ${x.player}</option>`).join("")+`</select></div>`;
+  h+=`<div class="bldlist">`;
+  for(let i=0;i<4;i++) h+=`<div class="bld"><div class="cost">${RICON[i]} (dispo ${v.resources[i]})</div>
+      <input id="trade_${i}" type="number" min="0" value="0" style="width:72px"
+        oninput="updateMerchantHint()"></div>`;
+  h+=`</div><div class="cost" id="merchantHint" style="margin:6px 0;opacity:.8"></div>
+      <button onclick="sendResources()">📦 Envoyer les ressources</button>`;
+  box.innerHTML=h;
+  box.querySelectorAll("input,select").forEach(el=>{
+    if(el.id && saved[el.id]!=null) el.value=saved[el.id]; });
+  updateMerchantHint();
+}
+
+function updateMerchantHint(){
+  const m=LAST&&LAST.market; if(!m) return;
+  let total=0; for(let i=0;i<4;i++){ const el=document.getElementById("trade_"+i);
+    total+=el?(parseInt(el.value)||0):0; }
+  const need=Math.ceil(total/m.capacity);
+  const hint=document.getElementById("merchantHint"); if(!hint) return;
+  hint.textContent = total>0
+    ? `${total} ressources → ${need} marchand(s)`+(need>m.merchants_free?` ⚠️ il n'en reste que ${m.merchants_free}`:"")
+    : "";
+}
+
+async function sendResources(){
+  const amounts=[]; for(let i=0;i<4;i++){ const el=document.getElementById("trade_"+i);
+    amounts[i]=el?(parseInt(el.value)||0):0; }
+  const body={target_id:+document.getElementById("tradeTarget").value, amounts};
+  const d=await post(`/api/village/${CURRENT}/trade`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(d){ document.getElementById("msg").textContent=`📦 ${d.merchants} marchand(s) en route — arrivée dans ${d.arrive_in}s`;
+    for(let i=0;i<4;i++){ const el=document.getElementById("trade_"+i); if(el) el.value=0; }
+    render(d.village); loadReports(); }
+}
+
+// ----- Carte du monde --------------------------------------------------------
+let MAP_CX=0, MAP_CY=0, MAP_R=7, MAP_WR=20;
+const clampWR = v => Math.max(-MAP_WR, Math.min(MAP_WR, v));
+
+async function loadMap(){
+  const d=await (await fetch(`/api/map?cx=${MAP_CX}&cy=${MAP_CY}&r=${MAP_R}`)).json();
+  MAP_WR=d.world_radius; renderMap(d);
+}
+function renderMap(d){
+  document.getElementById("mapCenter").textContent=`Centre (${MAP_CX}|${MAP_CY}) — rayon ${MAP_R}`;
+  const byXY={}; d.tiles.forEach(t=>byXY[t.x+","+t.y]=t);
+  const n=2*MAP_R+1;
+  let h="";
+  for(let y=MAP_CY+MAP_R; y>=MAP_CY-MAP_R; y--){
+    for(let x=MAP_CX-MAP_R; x<=MAP_CX+MAP_R; x++){
+      const t=byXY[x+","+y];
+      if(!t){ h+=`<div class="mcell" style="opacity:.25;background:#222">·</div>`; continue; }
+      let cls="mcell", main="", sub="";
+      if(t.kind==="village"){ cls+=t.village.is_own?" vmine":" venemy";
+        main=t.village.is_own?"★":(t.village.is_capital?"🏰":"🏠");
+        sub=t.village.name.slice(0,6);
+      } else if(t.kind==="oasis"){ cls+=" oasis";
+        main=`<span style="font-size:13px">${t.oasis.emoji||"🌿"}</span>`;
+        if(t.oasis.animals>0) sub="🐾"+t.oasis.animals; else sub="libre";
+      } else { cls+=" valley"; main="<span style='opacity:.4'>·</span>"; }
+      if(x===MAP_CX && y===MAP_CY) cls+=" center";
+      h+=`<div class="${cls}" title="(${x}|${y})" onclick="openTile(${x},${y})">${main}<small>${sub}</small></div>`;
+    }
+  }
+  const g=document.getElementById("mapGrid");
+  g.style.gridTemplateColumns=`repeat(${n}, 38px)`;
+  g.innerHTML=h;
+}
+function panMap(dx,dy){ const step=Math.max(1,MAP_R-2);
+  MAP_CX=clampWR(MAP_CX+dx*step); MAP_CY=clampWR(MAP_CY+dy*step); loadMap(); }
+function centerOnVillage(){ const v=ALLV.find(x=>x.id===CURRENT)||ALLV.find(x=>x.is_own);
+  if(v){ MAP_CX=v.x; MAP_CY=v.y; loadMap(); } }
+function gotoXY(){ MAP_CX=clampWR(+document.getElementById("gotoX").value||0);
+  MAP_CY=clampWR(+document.getElementById("gotoY").value||0); loadMap(); }
+
+function viewVillage(id){ CURRENT=id;
+  const sel=document.querySelector("#vsel select"); if(sel) sel.value=id;
+  closeModal(); showTab("village"); load();
+}
+// Cible courante de la modale de carte (village ou oasis) pour l'envoi d'armée.
+let MAP_TARGET=null;
+function attackForm(){
+  if(!LAST || !LAST.is_own)
+    return `<div class="cost" style="margin-top:8px;opacity:.85">Sélectionne d'abord un de tes villages (sélecteur en haut) pour envoyer une armée.</div>`;
+  const troops=LAST.troops.filter(t=>t.count>0);
+  if(!troops.length)
+    return `<div class="cost" style="margin-top:8px;opacity:.85">Aucune troupe disponible dans ${LAST.name}.</div>`;
+  const allowReinforce = MAP_TARGET && MAP_TARGET.target_id!=null;
+  let h=`<div style="margin-top:10px;border-top:1px solid #5a4330;padding-top:8px">
+    <b>🚀 Envoyer depuis ${LAST.name}</b>
+    <div style="margin:6px 0">Type : <select id="mapKind">
+      <option value="raid">Razzia</option><option value="attack">Attaque</option>
+      ${allowReinforce?'<option value="reinforce">Renfort</option>':''}</select></div>
+    <div class="bldlist">`;
+  for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
+    <input id="mapunit_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
+  h+=`</div><button style="margin-top:8px" onclick="sendFromMap()">🚀 Envoyer</button></div>`;
+  return h;
+}
+async function sendFromMap(){
+  const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("mapunit_"+i);
+    units[i]=el?(parseInt(el.value)||0):0; }
+  const body={kind:document.getElementById("mapKind").value, units, ...MAP_TARGET};
+  const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
+  if(d){ closeModal(); loadMap(); loadReports();
+    document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`; }
+}
+
+async function openTile(x,y){
+  const t=await (await fetch(`/api/tile/${x}/${y}`)).json();
+  const T=document.getElementById("modalTitle"), L=document.getElementById("modalList");
+  document.getElementById("modalMsg").textContent=""; MAP_TARGET=null;
+  if(t.kind==="village"){ const v=t.village;
+    T.textContent=`${v.is_own?"★ ":""}${v.name} (${x}|${y})`;
+    let h=`<div class="cost">Joueur : <b>${v.player}</b>${v.is_capital?" · 🏰 capitale":""}</div>
+      <div class="opt"><span>${v.is_own?"Ton village":"Village d'un autre joueur"}</span>
+      <button onclick="viewVillage(${v.id})">Voir le village</button></div>`;
+    if(!v.is_own){ MAP_TARGET={target_id:v.id}; h+=attackForm(); }
+    L.innerHTML=h;
+  } else if(t.kind==="oasis"){ const o=t.oasis;
+    T.textContent=`${o.emoji} Oasis (${x}|${y}) — ${o.label}`;
+    const bonus=o.bonus.map(b=>`+${b.percent} % ${b.resource}`).join(", ");
+    const animals=o.animals.length? o.animals.map(a=>`${a.name} ×${a.count}`).join(", ")
+      : "aucun animal — oasis libre";
+    MAP_TARGET={target_x:x, target_y:y};
+    let h=`<div class="cost">Bonus de production : <b>${bonus}</b></div>
+      <div class="cost" style="margin-top:6px">🐾 Animaux sauvages : ${animals}</div>`;
+    if(o.total_animals>0) h+=attackForm();
+    else h+=`<div class="cost" style="margin-top:6px;opacity:.7">Oasis nettoyée. Occupation (bonus de prod) : à venir (phase expansion / héros).</div>`;
+    L.innerHTML=h;
+  } else { const f=t.valley.fields;
+    T.textContent=`Vallée libre (${x}|${y})`;
+    L.innerHTML=`<div class="cost">Distribution des champs : <b>${t.valley.layout}</b></div>
+      <div class="cost" style="margin-top:6px">🌲 ${f.bois} · 🧱 ${f.argile} · ⛏️ ${f.fer} · 🌾 ${f["céréales"]}</div>
+      <div class="cost" style="margin-top:6px;opacity:.7">Fonder un village ici : à venir (phase expansion).</div>`;
+  }
+  document.getElementById("modal").style.display="flex";
+}
+
 let TAB="village", LAST_SEEN_T=0;
 function showTab(name){ TAB=name;
   document.getElementById("villageView").style.display = name==="village"?"":"none";
+  document.getElementById("mapView").style.display = name==="map"?"":"none";
   document.getElementById("reportsView").style.display = name==="reports"?"":"none";
   document.getElementById("tab_village").className = name==="village"?"":"ghost";
+  document.getElementById("tab_map").className = name==="map"?"":"ghost";
   document.getElementById("tab_reports").className = name==="reports"?"":"ghost";
   if(name==="reports") loadReports();
+  if(name==="map"){ if(!MAP_LOADED){ centerOnVillage(); MAP_LOADED=true; } else loadMap(); }
 }
+let MAP_LOADED=false;
 
 function fmtDate(ts){ return new Date(ts*1000).toLocaleString("fr-FR",
   {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }
@@ -302,6 +495,7 @@ async function loadReports(){
   box.innerHTML=reps.length ? reps.map(r=>{ const b=r.body; let line="";
     if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`;
     else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`;
+    else if(b.type==="oasis") line=`pertes ${b.pertes_pct}%${b.cleared?" · 🎉 oasis nettoyée":" · animaux restants"}`;
     else line="renfort";
     return `<div class="bld" style="text-align:left;margin-bottom:6px">
       <b>${r.title}</b> <small style="opacity:.55">${fmtDate(r.created_at)}</small>
@@ -315,6 +509,7 @@ async function loadReports(){
 }
 
 setInterval(load,4000); setInterval(loadReports,6000);
+setInterval(()=>{ if(TAB==="map" && MAP_LOADED) loadMap(); }, 5000);
 // Décompte live de la file de construction ; recharge dès qu'un ordre se termine.
 setInterval(()=>{ if(!ACTIVE_BUILDS.length) return;
   const now=Date.now()/1000;

@@ -80,13 +80,16 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS movements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             origin_id INTEGER NOT NULL,
-            target_id INTEGER NOT NULL,
+            target_id INTEGER,           -- village ciblé ; NULL si la cible est une oasis
             owner_id INTEGER NOT NULL,
-            kind TEXT NOT NULL,          -- attack | raid | reinforce
+            kind TEXT NOT NULL,          -- attack | raid | reinforce | trade
             phase TEXT NOT NULL,         -- outbound | back
             units TEXT NOT NULL,         -- json [10]
-            loot TEXT NOT NULL DEFAULT '[0,0,0,0]',
-            arrive_at REAL NOT NULL
+            loot TEXT NOT NULL DEFAULT '[0,0,0,0]',  -- butin (combat) ou cargaison (trade)
+            arrive_at REAL NOT NULL,
+            target_x INTEGER,            -- coordonnées de la cible (village ou oasis)
+            target_y INTEGER,
+            merchants INTEGER NOT NULL DEFAULT 0     -- trade : marchands mobilisés
         );
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,18 +99,84 @@ def init_db() -> None:
             body TEXT NOT NULL,          -- json
             seen INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS tiles (
+            x INTEGER NOT NULL,
+            y INTEGER NOT NULL,
+            kind TEXT NOT NULL,          -- valley | oasis
+            layout TEXT NOT NULL,        -- vallée: "4-4-4-6" ; oasis: code de bonus
+            animals TEXT,                -- oasis: json[10] (garnison Nature) ; vallée: null
+            PRIMARY KEY (x, y)
+        );
         """)
+        # Migration douce des bases antérieures : colonnes ajoutées au fil des features
+        # (oasis : target_x/y avec target_id NULL ; commerce : merchants).
+        for col in ("target_x INTEGER", "target_y INTEGER",
+                    "merchants INTEGER NOT NULL DEFAULT 0"):
+            try:
+                c.execute(f"ALTER TABLE movements ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass  # colonne déjà présente
+
+
+# --- Cases du monde (carte) --------------------------------------------------
+def world_is_empty() -> bool:
+    with connect() as c:
+        return c.execute("SELECT COUNT(*) AS n FROM tiles").fetchone()["n"] == 0
+
+
+def insert_tiles(tiles: list[dict]) -> None:
+    with connect() as c:
+        c.executemany(
+            "INSERT OR IGNORE INTO tiles(x, y, kind, layout, animals) VALUES (?,?,?,?,?)",
+            [(t["x"], t["y"], t["kind"], t["layout"],
+              json.dumps(t["animals"]) if t["animals"] is not None else None)
+             for t in tiles])
+
+
+def _tile_from_row(row: sqlite3.Row) -> dict:
+    return {"x": row["x"], "y": row["y"], "kind": row["kind"], "layout": row["layout"],
+            "animals": json.loads(row["animals"]) if row["animals"] else None}
+
+
+def get_tile(x: int, y: int) -> dict | None:
+    with connect() as c:
+        row = c.execute("SELECT * FROM tiles WHERE x=? AND y=?", (x, y)).fetchone()
+    return _tile_from_row(row) if row else None
+
+
+def tiles_in_box(x0: int, x1: int, y0: int, y1: int) -> list[dict]:
+    with connect() as c:
+        rows = c.execute(
+            "SELECT * FROM tiles WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?",
+            (x0, x1, y0, y1)).fetchall()
+    return [_tile_from_row(r) for r in rows]
+
+
+def update_tile_animals(x: int, y: int, animals: list[int]) -> None:
+    with connect() as c:
+        c.execute("UPDATE tiles SET animals=? WHERE x=? AND y=?",
+                  (json.dumps(animals), x, y))
 
 
 def insert_movement(origin_id, target_id, owner_id, kind, phase, units, arrive_at,
-                    loot=(0, 0, 0, 0)) -> int:
+                    loot=(0, 0, 0, 0), target_x=None, target_y=None, merchants=0) -> int:
     with connect() as c:
         cur = c.execute(
-            "INSERT INTO movements(origin_id,target_id,owner_id,kind,phase,units,loot,arrive_at)"
-            " VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO movements(origin_id,target_id,owner_id,kind,phase,units,loot,"
+            "arrive_at,target_x,target_y,merchants) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (origin_id, target_id, owner_id, kind, phase, json.dumps(units),
-             json.dumps(list(loot)), arrive_at))
+             json.dumps(list(loot)), arrive_at, target_x, target_y, merchants))
         return cur.lastrowid
+
+
+def merchants_out(village_id: int) -> int:
+    """Marchands actuellement mobilisés par les routes commerciales d'un village
+    (aller comme retour : un marchand reste indisponible jusqu'à son retour)."""
+    with connect() as c:
+        row = c.execute(
+            "SELECT COALESCE(SUM(merchants), 0) AS n FROM movements "
+            "WHERE origin_id=? AND kind='trade'", (village_id,)).fetchone()
+    return row["n"]
 
 
 def due_movements(now: float) -> list[dict]:

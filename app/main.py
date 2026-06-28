@@ -21,6 +21,7 @@ from app.data.tribes import Tribe, TRIBE_NAMES_FR
 from app.data.units import UNITS
 from app.engine import village as V
 from app.engine import movement as M
+from app.engine import world as W
 
 app = FastAPI(title="Travian local — T4.6")
 
@@ -30,10 +31,28 @@ WEB = Path(__file__).resolve().parent.parent / "web"
 HUMAN_PLAYER_ID: int | None = None
 
 
+def _find_free_valley(near_x: int, near_y: int, occupied: set[tuple[int, int]]) -> tuple[int, int]:
+    """Vallée libre la plus proche d'un point (spirale en anneaux croissants)."""
+    for radius in range(W.WORLD_RADIUS + 1):
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                if max(abs(dx), abs(dy)) != radius:
+                    continue  # uniquement le bord de l'anneau courant
+                x, y = near_x + dx, near_y + dy
+                if (x, y) in occupied:
+                    continue
+                t = store.get_tile(x, y)
+                if t and t["kind"] == "valley":
+                    return x, y
+    raise RuntimeError("Aucune vallée libre sur la carte.")
+
+
 def seed_world() -> None:
-    """Crée le monde de départ si la base est vide : toi + un voisin NPC."""
+    """Crée le monde de départ si la base est vide : la carte, toi + un voisin NPC."""
     global HUMAN_PLAYER_ID
     store.init_db()
+    if store.world_is_empty():
+        store.insert_tiles(W.generate_world())
     if not store.is_empty():
         rows = store.list_villages()
         HUMAN_PLAYER_ID = next((r["player_id"] for r in rows), None)
@@ -43,9 +62,10 @@ def seed_world() -> None:
         "Mon village", Tribe.GAULS, server_speed=SERVER_SPEED,
         x=0, y=0, player_id=HUMAN_PLAYER_ID, is_capital=True))
     npc = store.create_player("Voisin", Tribe.TEUTONS, is_npc=True)
+    nx, ny = _find_free_valley(3, 1, {(0, 0)})
     store.insert_village(V.new_village(
         "Camp teuton", Tribe.TEUTONS, server_speed=SERVER_SPEED,
-        x=3, y=1, player_id=npc, is_capital=True))
+        x=nx, y=ny, player_id=npc, is_capital=True))
 
 
 seed_world()
@@ -113,10 +133,22 @@ def serialize(v: V.Village) -> dict:
     moves = []
     for m in store.movements_for(v.id):
         incoming = m["target_id"] == v.id if m["phase"] == "outbound" else m["origin_id"] == v.id
-        moves.append({"kind": m["kind"], "phase": m["phase"],
-                      "dir": "in" if incoming else "out",
-                      "n": sum(json.loads(m["units"])),
-                      "arrive_in": round(m["arrive_at"] - now)})
+        entry = {"kind": m["kind"], "phase": m["phase"],
+                 "dir": "in" if incoming else "out",
+                 "n": sum(json.loads(m["units"])),
+                 "arrive_in": round(m["arrive_at"] - now)}
+        if m["kind"] == "trade":
+            entry["cargo"] = json.loads(m["loot"])  # ressources transportées
+            entry["merchants"] = m["merchants"]
+        moves.append(entry)
+
+    # Place de marché : niveau, marchands (total / libres), capacité par marchand.
+    market = None
+    if M.merchants_total(v) > 0:
+        market = {"level": M.merchants_total(v),
+                  "merchants_total": M.merchants_total(v),
+                  "merchants_free": M.merchants_available(v),
+                  "capacity": M.merchant_capacity(v)}
 
     return {
         "id": v.id, "name": v.name, "tribe": TRIBE_NAMES_FR[v.tribe],
@@ -127,7 +159,7 @@ def serialize(v: V.Village) -> dict:
         "troop_upkeep": V.troop_upkeep(v),
         "queue_len": len(v.queue), "max_queue": v.max_queue, "slots": slots,
         "troops": troops, "training": training, "military": military,
-        "movements": moves,
+        "movements": moves, "market": market,
     }
 
 
@@ -140,9 +172,11 @@ def _get(village_id: int) -> V.Village:
 
 
 class SendArmy(BaseModel):
-    target_id: int
     kind: str  # attack | raid | reinforce
     units: list[int]
+    target_id: int | None = None       # cible village
+    target_x: int | None = None        # cible oasis (coordonnées)
+    target_y: int | None = None
 
 
 @app.get("/api/villages")
@@ -151,6 +185,66 @@ def villages():
     for r in rows:
         r["is_own"] = r["player_id"] == HUMAN_PLAYER_ID
     return {"villages": rows, "human_player_id": HUMAN_PLAYER_ID}
+
+
+def _villages_by_xy() -> dict[tuple[int, int], dict]:
+    out = {}
+    for r in store.list_villages():
+        r["is_own"] = r["player_id"] == HUMAN_PLAYER_ID
+        out[(r["x"], r["y"])] = r
+    return out
+
+
+@app.get("/api/map")
+def map_view(cx: int = 0, cy: int = 0, r: int = 7):
+    """Viewport de la carte : cases (vallées/oasis/villages) dans un carré ±r."""
+    r = max(1, min(r, 15))
+    villages = _villages_by_xy()
+    tiles = []
+    for t in store.tiles_in_box(cx - r, cx + r, cy - r, cy + r):
+        cell = {"x": t["x"], "y": t["y"], "kind": t["kind"]}
+        v = villages.get((t["x"], t["y"]))
+        if v is not None:
+            cell["kind"] = "village"
+            cell["village"] = {"id": v["id"], "name": v["name"], "player": v["player"],
+                               "is_own": v["is_own"], "is_capital": bool(v["is_capital"])}
+        elif t["kind"] == "oasis":
+            cell["oasis"] = {"label": W.oasis_label(t["layout"]),
+                             "emoji": W.oasis_emoji(t["layout"]),
+                             "animals": W.animal_count(t["animals"])}
+        else:
+            cell["layout"] = t["layout"]
+        tiles.append(cell)
+    return {"center": [cx, cy], "radius": r, "world_radius": W.WORLD_RADIUS,
+            "tiles": tiles}
+
+
+@app.get("/api/tile/{x}/{y}")
+def tile_detail(x: int, y: int):
+    t = store.get_tile(x, y)
+    if t is None:
+        raise HTTPException(status_code=404, detail="Hors de la carte.")
+    v = _villages_by_xy().get((x, y))
+    out = {"x": x, "y": y, "kind": t["kind"]}
+    if v is not None:
+        out["kind"] = "village"
+        out["village"] = {"id": v["id"], "name": v["name"], "player": v["player"],
+                          "is_own": v["is_own"], "is_capital": bool(v["is_capital"])}
+    elif t["kind"] == "oasis":
+        bonus = W.oasis_bonus(t["layout"])
+        res_names = ["bois", "argile", "fer", "céréales"]
+        out["oasis"] = {
+            "label": W.oasis_label(t["layout"]),
+            "emoji": W.oasis_emoji(t["layout"]),
+            "bonus": [{"resource": res_names[i], "percent": p} for i, p in bonus.items()],
+            "animals": W.animal_breakdown(t["animals"]),
+            "total_animals": W.animal_count(t["animals"]),
+        }
+    else:
+        w, c, i, cr = (int(n) for n in t["layout"].split("-"))
+        out["valley"] = {"layout": t["layout"], "fields": {"bois": w, "argile": c,
+                                                           "fer": i, "céréales": cr}}
+    return out
 
 
 @app.get("/api/village/{village_id}")
@@ -200,12 +294,53 @@ def train(village_id: int, building_id: int, unit_index: int, count: int):
 def send_army(village_id: int, body: SendArmy):
     if body.kind not in ("attack", "raid", "reinforce"):
         raise HTTPException(status_code=400, detail="Type d'ordre invalide.")
+    if body.target_id is None and (body.target_x is None or body.target_y is None):
+        raise HTTPException(status_code=400, detail="Cible manquante.")
     units = (body.units + [0] * 10)[:10]
     try:
-        info = M.send(village_id, body.target_id, HUMAN_PLAYER_ID, body.kind, units)
+        info = M.send(village_id, body.target_id, HUMAN_PLAYER_ID, body.kind, units,
+                      target_x=body.target_x, target_y=body.target_y)
     except M.MoveError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "arrive_in": info["arrive_in"], "village": serialize(_get(village_id))}
+
+
+class SendResources(BaseModel):
+    target_id: int
+    amounts: list[int]  # [bois, argile, fer, céréales]
+
+
+@app.get("/api/village/{village_id}/market")
+def market(village_id: int):
+    """Infos de la place de marché + cibles d'envoi possibles (autres villages)."""
+    v = _get(village_id)
+    if M.merchants_total(v) < 1:
+        raise HTTPException(status_code=400, detail="Pas de place de marché dans ce village.")
+    targets = []
+    for r in store.list_villages():
+        if r["id"] == v.id:
+            continue
+        d = M.distance(v.x, v.y, r["x"], r["y"])
+        targets.append({"id": r["id"], "name": r["name"], "player": r["player"],
+                        "x": r["x"], "y": r["y"], "is_own": r["player_id"] == HUMAN_PLAYER_ID,
+                        "distance": round(d, 1),
+                        "travel": round(M.merchant_seconds(v.x, v.y, r["x"], r["y"],
+                                                           v.tribe, v.server_speed))})
+    targets.sort(key=lambda t: t["distance"])
+    return {"level": M.merchants_total(v), "merchants_total": M.merchants_total(v),
+            "merchants_free": M.merchants_available(v), "capacity": M.merchant_capacity(v),
+            "resources": [round(r) for r in v.resources], "targets": targets}
+
+
+@app.post("/api/village/{village_id}/trade")
+def trade(village_id: int, body: SendResources):
+    amounts = (body.amounts + [0, 0, 0, 0])[:4]
+    try:
+        info = M.send_resources(village_id, body.target_id, HUMAN_PLAYER_ID, amounts)
+    except M.MoveError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "arrive_in": info["arrive_in"], "merchants": info["merchants"],
+            "village": serialize(_get(village_id))}
 
 
 @app.get("/api/reports")

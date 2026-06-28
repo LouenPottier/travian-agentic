@@ -13,9 +13,12 @@ import time as _time
 
 from app import store
 from app.data import buildings as BLD
+from app.data.buildings import B
+from app.data.tribes import Tribe, MERCHANT_CAPACITY, MERCHANT_SPEED
 from app.data.units import UNITS
 from app.engine import combat as C
 from app.engine import village as V
+from app.engine import world as W
 
 
 def distance(ax, ay, bx, by) -> float:
@@ -36,19 +39,113 @@ class MoveError(Exception):
     pass
 
 
-def send(origin_id: int, target_id: int, player_id: int, kind: str,
-         units: list[int], now: float | None = None) -> dict:
+# --- Commerce (place de marché) ---------------------------------------------
+def merchant_capacity(v) -> int:
+    """Cargaison maximale d'un marchand : base tribu, +10 %/niveau de comptoir
+    commercial. Non multipliée par la vitesse serveur (cf. tribes.MERCHANT_CAPACITY)."""
+    office = V.building_levels(v).get(B.TRADE_OFFICE, 0)
+    return round(MERCHANT_CAPACITY[v.tribe] * (1 + 0.10 * office))
+
+
+def merchants_total(v) -> int:
+    """Nombre total de marchands = niveau de la place de marché."""
+    return V.building_levels(v).get(B.MARKETPLACE, 0)
+
+
+def merchants_available(v) -> int:
+    """Marchands libres = total − ceux en route (aller ou retour)."""
+    return merchants_total(v) - store.merchants_out(v.id)
+
+
+def merchant_seconds(ax, ay, bx, by, tribe, server_speed) -> float:
+    """Durée d'un trajet de marchands (vitesse propre à la tribu, pas celle des troupes)."""
+    return distance(ax, ay, bx, by) / MERCHANT_SPEED[tribe] * 3600.0 / server_speed
+
+
+def send_resources(origin_id: int, target_id: int, player_id: int,
+                   amounts: list[int], now: float | None = None) -> dict:
+    """Envoie des ressources d'un de tes villages vers un village (le tien ou un autre).
+
+    Marchands mobilisés = plafond(total / capacité d'un marchand) ; ils restent
+    indisponibles jusqu'à leur retour à vide. Les ressources quittent l'origine
+    immédiatement ; elles sont déposées (et plafonnées par le stockage) à l'arrivée.
+    """
     now = now or _time.time()
     origin = store.load_village(origin_id)
-    target = store.load_village(target_id)
-    if origin is None or target is None:
+    if origin is None:
         raise MoveError("Village introuvable.")
     if origin.player_id != player_id:
         raise MoveError("Ce village ne t'appartient pas.")
+    target = store.load_village(target_id)
+    if target is None:
+        raise MoveError("Village cible introuvable.")
     if origin_id == target_id:
         raise MoveError("Cible identique à l'origine.")
+    if merchants_total(origin) < 1:
+        raise MoveError("Construis une place de marché pour commercer.")
+
+    amounts = [max(0, int(a)) for a in (amounts + [0, 0, 0, 0])[:4]]
+    total = sum(amounts)
+    if total <= 0:
+        raise MoveError("Aucune ressource à envoyer.")
+
+    V.tick(origin, now)
+    for i in range(4):
+        if amounts[i] > origin.resources[i]:
+            raise MoveError("Ressources insuffisantes.")
+
+    capacity = merchant_capacity(origin)
+    need = math.ceil(total / capacity)
+    free = merchants_available(origin)
+    if need > free:
+        raise MoveError(f"Pas assez de marchands libres ({free} dispo, {need} requis).")
+
+    for i in range(4):
+        origin.resources[i] -= amounts[i]
+    store.save_village(origin)
+
+    secs = merchant_seconds(origin.x, origin.y, target.x, target.y,
+                            origin.tribe, origin.server_speed)
+    mid = store.insert_movement(origin_id, target_id, player_id, "trade", "outbound",
+                                [0] * 10, now + secs, loot=amounts,
+                                target_x=target.x, target_y=target.y, merchants=need)
+    return {"id": mid, "arrive_in": round(secs), "merchants": need}
+
+
+def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
+         units: list[int], now: float | None = None,
+         target_x: int | None = None, target_y: int | None = None) -> dict:
+    """Envoie une armée vers un village (`target_id`) **ou** une oasis (`target_x/y`).
+
+    Cible village : `target_id` renseigné. Cible oasis : `target_id=None` et
+    coordonnées de la case (qui doit être une oasis ; on n'attaque pas une vallée
+    vide). Les oasis ne peuvent recevoir que des razzias/attaques, pas de renfort.
+    """
+    now = now or _time.time()
+    origin = store.load_village(origin_id)
+    if origin is None:
+        raise MoveError("Village introuvable.")
+    if origin.player_id != player_id:
+        raise MoveError("Ce village ne t'appartient pas.")
     if sum(units) <= 0:
         raise MoveError("Aucune troupe sélectionnée.")
+
+    if target_id is not None:
+        target = store.load_village(target_id)
+        if target is None:
+            raise MoveError("Village introuvable.")
+        if origin_id == target_id:
+            raise MoveError("Cible identique à l'origine.")
+        tx, ty = target.x, target.y
+    else:
+        tile = store.get_tile(target_x, target_y)
+        if tile is None or tile["kind"] != "oasis":
+            raise MoveError("Cible invalide : seules les oasis sont attaquables sur la carte.")
+        if kind == "reinforce":
+            raise MoveError("On ne peut pas renforcer une oasis.")
+        if (target_x, target_y) == (origin.x, origin.y):
+            raise MoveError("Cible identique à l'origine.")
+        tx, ty = target_x, target_y
 
     V.tick(origin, now)
     for i in range(10):
@@ -61,11 +158,11 @@ def send(origin_id: int, target_id: int, player_id: int, kind: str,
         origin.away[i] += units[i]
     store.save_village(origin)
 
-    secs = travel_seconds(origin.x, origin.y, target.x, target.y,
+    secs = travel_seconds(origin.x, origin.y, tx, ty,
                           origin.tribe, units, origin.server_speed)
     arrive_at = now + secs
     mid = store.insert_movement(origin_id, target_id, player_id, kind, "outbound",
-                                units, arrive_at)
+                                units, arrive_at, target_x=tx, target_y=ty)
     return {"id": mid, "arrive_in": round(secs)}
 
 
@@ -115,6 +212,37 @@ def _resolve_battle(origin, target, units, kind, now):
     return survivors, loot
 
 
+def _resolve_oasis(origin, tile, units, kind, now):
+    """Combat à l'arrivée sur une oasis : troupes du joueur vs animaux (Nature).
+
+    Pas de butin (les oasis ne stockent aucune ressource) ; on réduit la garnison
+    d'animaux survivants. Place.pop = pop de l'attaquant pour neutraliser le bonus
+    de moral (pas d'avantage « gros village » face aux animaux). Renvoie les
+    survivants offensifs."""
+    animals = tile["animals"] or [0] * 10
+    off = C.Off(units=UNITS[origin.tribe], numbers=list(units), upgrades=[0] * 10,
+                pop=V.population(origin), kind=kind)
+    deff = C.Defender(units=UNITS[Tribe.NATURE], numbers=list(animals), upgrades=[0] * 10)
+    place = C.Place(tribe=int(Tribe.NATURE), pop=off.pop, wall_level=0)
+    res = C.combat(place, off, [deff])
+
+    survivors = [round(units[i] * (1 - res.off_losses)) for i in range(10)]
+    animals_after = [round(animals[i] * (1 - res.def_losses)) for i in range(10)]
+    store.update_tile_animals(tile["x"], tile["y"], animals_after)
+
+    label = W.oasis_label(tile["layout"])
+    store.add_report(origin.player_id, now,
+                     f"🐾 Attaque d'oasis ({tile['x']}|{tile['y']})", {
+                         "type": "oasis", "oasis": label, "kind": kind,
+                         "coords": [tile["x"], tile["y"]],
+                         "envoyees": list(units), "survivantes": survivors,
+                         "pertes_pct": round(res.off_losses * 100),
+                         "animaux_avant": W.animal_breakdown(animals),
+                         "animaux_apres": W.animal_breakdown(animals_after),
+                         "cleared": sum(animals_after) == 0})
+    return survivors
+
+
 # FastAPI exécute les endpoints synchrones dans un pool de threads : deux requêtes
 # concurrentes (poll de l'UI + navigation) appelaient process_due en parallèle,
 # lisaient le même mouvement « arrivé » avant suppression et réintégraient donc les
@@ -152,6 +280,31 @@ def _process_due_locked(now: float) -> int:
             store.delete_movement(m["id"])
             continue
 
+        if m["kind"] == "trade":
+            # Livraison de ressources : on dépose la cargaison chez la cible
+            # (plafonnée par son stockage ; le surplus est perdu), puis les
+            # marchands repartent à vide vers l'origine (géré par la phase "back").
+            cargo = json.loads(m["loot"])
+            V.tick(target, now)
+            caps = V.capacities(target)
+            lost = [0, 0, 0, 0]
+            for i in range(4):
+                avant = target.resources[i]
+                target.resources[i] = min(caps[i], avant + cargo[i])
+                lost[i] = round(max(0, avant + cargo[i] - caps[i]))
+            store.save_village(target)
+            store.add_report(target.player_id, now, f"📦 Ressources reçues à {target.name}",
+                             {"type": "trade", "de": origin.name, "cargaison": cargo,
+                              "perdu": lost, "coords": [origin.x, origin.y]})
+            secs = merchant_seconds(target.x, target.y, origin.x, origin.y,
+                                    origin.tribe, origin.server_speed)
+            store.insert_movement(m["origin_id"], m["target_id"], m["owner_id"],
+                                  "trade", "back", [0] * 10, now + secs,
+                                  target_x=origin.x, target_y=origin.y,
+                                  merchants=m["merchants"])
+            store.delete_movement(m["id"])
+            continue
+
         if m["kind"] == "reinforce":
             # Les renforts cessent de consommer chez l'origine et passent à la
             # charge de la cible où ils stationnent désormais.
@@ -168,9 +321,14 @@ def _process_due_locked(now: float) -> int:
             store.delete_movement(m["id"])
             continue
 
-        # attack / raid
-        V.tick(target, now)
-        survivors, loot = _resolve_battle(origin, target, units, m["kind"], now)
+        # attack / raid — cible village (target_id) ou oasis (coordonnées seules)
+        loot = (0, 0, 0, 0)
+        if m["target_id"] is not None:
+            V.tick(target, now)
+            survivors, loot = _resolve_battle(origin, target, units, m["kind"], now)
+        else:
+            tile = store.get_tile(m["target_x"], m["target_y"])
+            survivors = _resolve_oasis(origin, tile, units, m["kind"], now)
         # Les pertes au combat quittent définitivement les effectifs en vol de
         # l'origine ; les survivants y restent jusqu'à leur retour.
         V.tick(origin, now)
@@ -179,8 +337,10 @@ def _process_due_locked(now: float) -> int:
         store.save_village(origin)
         store.delete_movement(m["id"])
         if sum(survivors) > 0:
-            secs = travel_seconds(target.x, target.y, origin.x, origin.y,
+            # Retour depuis le lieu du combat (coordonnées de la cible) vers l'origine.
+            secs = travel_seconds(m["target_x"], m["target_y"], origin.x, origin.y,
                                   origin.tribe, survivors, origin.server_speed)
             store.insert_movement(m["origin_id"], m["target_id"], m["owner_id"],
-                                  m["kind"], "back", survivors, now + secs, loot)
+                                  m["kind"], "back", survivors, now + secs, loot,
+                                  target_x=m["target_x"], target_y=m["target_y"])
     return count

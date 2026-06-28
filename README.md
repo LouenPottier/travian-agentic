@@ -25,25 +25,33 @@ Puis ouvrir http://127.0.0.1:8000/
 - [x] **Phase 1** — village jouable : production paresseuse, stockage, construction, **vue isométrique**
 - [x] **Phase 2** — militaire & combat : **formule de combat exacte** (vecteurs Kirilloid validés),
       entraînement (caserne/écurie/atelier), mouvements d'armées (trajet, combat, butin, retour, rapports)
-- [~] **Phase 3** — monde & multijoueur : persistance SQLite, joueurs, plusieurs villages, coordonnées.
-      Reste : carte, place de marché, expansion (2ᵉ village).
+- [~] **Phase 3** — monde & multijoueur : persistance SQLite, joueurs, plusieurs villages, coordonnées,
+      **carte du monde** (vallées + oasis avec animaux, ~30 % d'oasis, 8 types distingués par emoji),
+      **attaque depuis la carte** (villages et oasis : combat vs animaux sauvages), **place de marché**
+      (marchands : transfert de ressources, capacité/nombre selon tribu + niveau du marché). Reste :
+      expansion (2ᵉ village : points de culture, colons, fondation), **occupation** d'oasis.
 - [ ] **Phase 4** — API agents & bots
 
 ### Tests
 ```bash
 ./venv/bin/python -m scripts.validate_data   # valeurs vs kirilloid.ru
-./venv/bin/python -m tests.test_combat       # vecteurs de combat Kirilloid
-./venv/bin/python -m tests.test_raid         # raid de bout en bout
+./venv/bin/python -m pytest tests/test_combat.py   # vecteurs de combat Kirilloid (pytest)
+./venv/bin/python -m tests.test_raid         # raid de bout en bout (script)
+./venv/bin/python -m tests.test_trade        # commerce de bout en bout (script)
 ```
 
 > Vitesse serveur ×100 par défaut (cf. `SERVER_SPEED` dans `app/main.py`) pour tester
 > rapidement. La base `game.db` se (re)crée automatiquement ; la supprimer réinitialise le monde.
+>
+> Village de test développé : `./venv/bin/python -m scripts.restore_village` restaure un
+> village déjà avancé (instantané `scripts/saves/mon_village.json`) ; `--save` met à jour
+> l'instantané depuis l'état courant. **Arrêter le serveur avant** (sinon il réécrit la base).
 
 ## Architecture
 
 ```
 app/data/      tables et formules de jeu (fidélité) — formulas, buildings, units, tribes
-app/engine/    moteur : simulation paresseuse du village (village.py)
+app/engine/    moteur : village (village.py), combat (combat.py), mouvements (movement.py), monde/carte (world.py)
 app/api/        (à venir) endpoints REST structurés
 app/main.py    application FastAPI + UI minimale
 web/           interface web (HTML/JS vanilla)
