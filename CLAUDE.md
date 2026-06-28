@@ -14,8 +14,11 @@ UI web jouable + API JSON pour des agents. Voir `README.md` pour le détail et l
 - Les données et formules viennent de **kirilloid/travian** (modèle `t4`, cascade
   base→t3→t3.1→t3.5→t4). Toute valeur de jeu doit être recoupée avec travian.kirilloid.ru.
 - Écarts Kirilloid corrigés (cf. commentaires) : prérequis scierie/briqueterie intervertis,
-  formule de capacité de cachette buguée. Si tu repères un autre écart, corrige vers le **vrai
-  Travian** et documente-le.
+  formule de capacité de cachette buguée, **temps de construction trappeur/manoir du héros**
+  (kirilloid écrit `time(2000,0)`/`time(2300,0)` : le `0` est mis dans l'argument *k* au lieu de
+  *b* ⇒ temps négatif/nul dès le niveau 2 ; corrigé en `make_time(a, 1.16, 0)`, recoupé sur le
+  vrai Travian — manoir niv 1→20 à BP 10 : 27:30 … 7:42:20). Si tu repères un autre écart, corrige
+  vers le **vrai Travian** et documente-le.
 - **Coûts non modélisés par kirilloid → approximations documentées** (même statut que les
   marchands, cf. `tribes.py`) : recherche en **académie** = coût d'entraînement de l'unité
   (temps = `research_time` kirilloid) ; amélioration en **forge** = coût × niveau visé ;

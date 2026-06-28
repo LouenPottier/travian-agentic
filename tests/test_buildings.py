@@ -18,6 +18,7 @@ store.DB_PATH = Path(tempfile.mkdtemp()) / "buildings.db"
 
 from app.engine import village as V
 from app.engine import movement as M
+from app.data import buildings as BLD
 from app.data.buildings import B
 from app.data.tribes import Tribe
 
@@ -226,6 +227,64 @@ def test_siege_wiring():
     print("✅ razzia : aucune destruction (siège réservé à l'attaque normale)")
 
 
+def test_mansion_trapper_build_time():
+    """Temps de construction trappeur/manoir : écart kirilloid corrigé (`time(a,0)`
+    plaçait le 0 dans *k* ⇒ temps négatif/nul dès le niveau 2). Doit croître avec le
+    niveau et coller au vrai Travian (manoir niv 1 = 2300 s de base ; niv 1→20 à BP 10
+    : 27:30 → 7:42:20)."""
+    hm = BLD.get(B.HERO_MANSION)
+    tr = BLD.get(B.TRAPPER)
+    # Temps strictement positifs et croissants (plus de niveau nul/négatif).
+    hm_times = [hm.time_at(l) for l in range(1, 21)]
+    tr_times = [tr.time_at(l) for l in range(1, 21)]
+    assert all(t > 0 for t in hm_times + tr_times), (hm_times, tr_times)
+    assert hm_times == sorted(hm_times) and tr_times == sorted(tr_times)
+    assert hm.time_at(1) == 2300 and tr.time_at(1) == 2000   # niveau 1 = paramètre a (b=0)
+    # Recoupe le vrai Travian à BP 10 (facteur 0.964**9).
+    f = 0.964 ** 9
+    assert abs(hm.time_at(1) * f - 1650) < 15      # 27:30
+    assert abs(hm.time_at(20) * f - 27740) < 60    # 7:42:20
+    print("✅ temps de construction trappeur/manoir corrigés (positifs, croissants)")
+
+
+def test_settler_chief_training_gating():
+    """Colons/chefs : le vrai Travian exige le bâtiment au **niveau 10**, et les chefs
+    ne se forment qu'au **palais** (jamais à la résidence)."""
+    from app.data.buildings import B as Bb
+
+    def mk(bid, lvl):
+        v = V.new_village("T", Tribe.ROMANS, server_speed=100)
+        v.slots[5] = V.Slot(building_id=bid, level=lvl)
+        v.resources = [10 ** 9] * 4
+        return v
+
+    units = V.UNITS[Tribe.ROMANS]
+    chief = next(i for i, u in enumerate(units) if u.is_chief)
+    settler = next(i for i, u in enumerate(units) if u.is_settler)
+
+    # Sous le niveau 10 : rien n'est formable, ni en résidence ni en palais.
+    assert V.trainable_units(mk(Bb.RESIDENCE, 9), Bb.RESIDENCE) == []
+    assert V.trainable_units(mk(Bb.PALACE, 9), Bb.PALACE) == []
+
+    # Niveau 10 : résidence → colon seul ; palais → colon + chef.
+    res10 = [i for i, _ in V.trainable_units(mk(Bb.RESIDENCE, 10), Bb.RESIDENCE)]
+    pal10 = [i for i, _ in V.trainable_units(mk(Bb.PALACE, 10), Bb.PALACE)]
+    assert res10 == [settler], res10
+    assert settler in pal10 and chief in pal10, pal10
+
+    # enqueue : refus du colon sous niv 10, refus du chef en résidence, OK au palais.
+    for bid, idx, lvl in [(Bb.RESIDENCE, settler, 9), (Bb.RESIDENCE, chief, 10)]:
+        try:
+            V.enqueue_training(mk(bid, lvl), bid, idx, 1)
+            assert False, "aurait dû échouer"
+        except V.BuildError as e:
+            print("refus attendu :", e)
+    v = mk(Bb.PALACE, 10)
+    o = V.enqueue_training(v, Bb.PALACE, chief, 1, now=v.updated_at)
+    assert o.per_unit == units[chief].train_time / v.server_speed   # facteur 1.0, pas de crash
+    print("✅ colons/chefs : niveau 10 requis, chefs réservés au palais")
+
+
 def main():
     test_research_gating()
     test_smithy_combat()
@@ -233,8 +292,10 @@ def main():
     test_traps_in_combat()
     test_great_barracks_trains()
     test_siege_wiring()
+    test_mansion_trapper_build_time()
+    test_settler_chief_training_gating()
     print("\n✅ Mécaniques de bâtiments (académie / forge / trappeur / pièges / "
-          "grande caserne / siège) validées")
+          "grande caserne / siège / temps manoir / colons-chefs) validées")
 
 
 if __name__ == "__main__":

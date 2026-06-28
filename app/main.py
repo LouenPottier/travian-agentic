@@ -158,17 +158,16 @@ def serialize(v: V.Village) -> dict:
                  "remaining": t.remaining, "next_in": round(t.next_finish - now)}
                 for t in v.training]
     military = []
-    # Seuls caserne/écurie/atelier réduisent le temps d'entraînement (train_bonus).
-    # La résidence n'a pas de réduction (son `benefit` renvoie un dict de slots).
-    TRAIN_BONUS_BUILDINGS = (B.BARRACKS, B.STABLES, B.WORKSHOP,
-                             B.GREAT_BARRACKS, B.GREAT_STABLES)
-    for bid in (B.BARRACKS, B.STABLES, B.WORKSHOP, B.RESIDENCE,
+    # Caserne/écurie/atelier (+ grandes variantes) → troupes ; résidence/palais →
+    # colons/chefs (niveau 10+). La réduction de temps (train_time_factor) ne
+    # s'applique qu'aux casernes/écuries/ateliers (résidence/palais : facteur 1,0).
+    for bid in (B.BARRACKS, B.STABLES, B.WORKSHOP, B.RESIDENCE, B.PALACE,
                 B.GREAT_BARRACKS, B.GREAT_STABLES):
         lvl = levels.get(bid, 0)
         if lvl < 1:
             continue
         b = BLD.get(bid)
-        factor = b.benefit(lvl) if bid in TRAIN_BONUS_BUILDINGS else 1.0
+        factor = V.train_time_factor(bid, lvl)
         # Grande caserne / grande écurie : mêmes unités, coût ×3 (cf. village.py).
         mult = V.GREAT_COST_MULT if bid in V.GREAT_TRAINERS else 1
         military.append({

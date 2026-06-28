@@ -121,7 +121,7 @@ const Bk = {SMITHY:12, MAIN:14, RALLY:15, MARKET:16, EMBASSY:17, BARRACKS:18,
   STABLES:19, WORKSHOP:20, ACADEMY:21, RESIDENCE:24, PALACE:25, TRADE_OFFICE:27, TRAPPER:35,
   GREAT_BARRACKS:28, GREAT_STABLES:29, HERO_MANSION:36};
 const TRAIN_BUILDINGS = new Set([Bk.BARRACKS, Bk.STABLES, Bk.WORKSHOP, Bk.RESIDENCE,
-  Bk.GREAT_BARRACKS, Bk.GREAT_STABLES]);
+  Bk.PALACE, Bk.GREAT_BARRACKS, Bk.GREAT_STABLES]);
 const FIELD_COLOR = {0:"#3f6b3a",1:"#b5713a",2:"#707682",3:"#c8a82f"};
 const FIELD_ICON  = {0:"🌲",1:"🧱",2:"⛏️",3:"🌾"};
 const BICON = {4:"🪚",5:"🧱",6:"🔥",7:"🌀",8:"🍞",9:"📦",10:"🥖",12:"🔨",13:"🏟️",14:"🏛️",
@@ -325,7 +325,11 @@ function renderTrainPanel(s,P){
   const q=(LAST.training||[]).filter(t=>t.building_id===s.building_id);
   if(q.length) h+=`<div class="cost" style="margin-bottom:6px">⏳ `+
     q.map(t=>`${t.unit} ×${t.remaining} (${fmtTimer(t.next_in)})`).join(" · ")+`</div>`;
-  if(!m||!m.units.length){ P.innerHTML=h+`<div class="cost" style="opacity:.6">Aucune unité disponible.</div>`; return; }
+  if(!m||!m.units.length){
+    let why="Aucune unité disponible.";
+    if(s.building_id===Bk.RESIDENCE) why="Colons à partir du niveau 10.";
+    else if(s.building_id===Bk.PALACE) why="Colons et chefs à partir du niveau 10.";
+    P.innerHTML=h+`<div class="cost" style="opacity:.6">${why}</div>`; return; }
   h+=`<div class="bldlist">`;
   for(const u of m.units){
     h+=`<div class="bld"><div class="name">${u.name}</div>
