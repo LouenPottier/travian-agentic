@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Travian local — T4.6</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:#2c1f15; color:#eee; }
+  header { background:#1f150d; padding:8px 16px; display:flex; gap:16px; align-items:center;
+           flex-wrap:wrap; border-bottom:2px solid #000; position:sticky; top:0; z-index:10; }
+  h1 { font-size:15px; margin:0 12px 0 0; color:#e8d8a0; }
+  .badge { background:#a33; border-radius:10px; padding:2px 8px; font-size:12px; font-weight:700; }
+  .res { display:flex; align-items:center; gap:6px; font-variant-numeric:tabular-nums; }
+  .res .ico { font-size:18px; } .res .amt { min-width:96px; } .res small { opacity:.7; }
+  .prod-pos { color:#7fe07f; } .prod-neg { color:#ff8080; }
+  main { padding:16px; max-width:1000px; margin:0 auto; }
+  h2 { color:#e8d8a0; border-bottom:1px solid #5a4330; padding-bottom:4px; }
+  .board { background:radial-gradient(circle at 50% 35%, #5a7a3e 0%, #4a6534 55%, #3a4f28 100%);
+           border:2px solid #1f150d; border-radius:10px; padding:6px; }
+  .tile3d:hover polygon { filter:brightness(1.15); }
+  .bldlist { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:8px; }
+  .bld { background:#5a4330; border:1px solid #2a1d14; border-radius:6px; padding:8px; text-align:center; }
+  .name { font-size:13px; min-height:18px; font-weight:600; }
+  .cost { font-size:11px; opacity:.9; }
+  button { cursor:pointer; background:#caa15a; border:none; border-radius:4px; padding:5px 10px;
+           font-size:12px; margin-top:6px; color:#2a1d14; font-weight:700; }
+  button.ghost { background:#2a1d14; color:#e8d8a0; border:1px solid #caa15a; }
+  select, input { background:#2a1d14; color:#e8d8a0; border:1px solid #caa15a; border-radius:4px; padding:3px; }
+  #vsel { color:#e8d8a0; font-weight:600; }
+  #msg { min-height:18px; color:#ff9; margin:6px 0; }
+  #modalMsg { min-height:0; color:#ff8080; margin:8px 0 0; font-size:13px; }
+  #modalMsg:not(:empty) { min-height:18px; }
+  nav#tabs { display:flex; gap:8px; margin:4px 0 14px; }
+  nav#tabs button { font-size:13px; padding:6px 14px; }
+  nav#tabs .badge { background:#a33; margin-left:4px; padding:1px 6px; }
+  .queuebox { background:#1f150d; border:1px solid #caa15a; border-radius:6px;
+              padding:8px 12px; margin-bottom:14px; }
+  .queuebox b { color:#e8d8a0; }
+  .queuebox .timer { font-variant-numeric:tabular-nums; color:#7fe07f; font-weight:700; }
+  #modal { position:fixed; inset:0; background:#000b; display:none; z-index:50;
+           align-items:center; justify-content:center; }
+  #modal .box { background:#1f150d; border:2px solid #caa15a; border-radius:8px; padding:16px;
+                max-width:620px; width:90%; max-height:80vh; overflow:auto; }
+  #modal h3 { margin:0 0 12px; color:#e8d8a0; }
+  .opt { display:flex; justify-content:space-between; align-items:center; gap:12px;
+         padding:8px; border-bottom:1px solid #5a4330; }
+</style>
+</head>
+<body>
+<header><div id="vsel"></div><div id="bar" style="display:contents"></div></header>
+<main>
+  <div id="msg"></div>
+  <nav id="tabs">
+    <button id="tab_village" onclick="showTab('village')">🏰 Village</button>
+    <button id="tab_reports" class="ghost" onclick="showTab('reports')">📜 Rapports
+      <span id="repBadge" class="badge" style="display:none"></span></button>
+  </nav>
+  <div id="villageView">
+    <div id="builds"></div>
+    <h2>Champs de ressources</h2>
+    <div class="board" id="fields"></div>
+    <h2 style="margin-top:20px">Centre du village</h2>
+    <div class="board" id="center" style="background:linear-gradient(#6b5436,#4a3a26)"></div>
+    <h2 style="margin-top:20px">Armée</h2>
+    <div id="army"></div>
+  </div>
+  <div id="reportsView" style="display:none">
+    <h2>Rapports</h2>
+    <div id="reports"></div>
+  </div>
+</main>
+<div id="modal" onclick="if(event.target.id==='modal')closeModal()">
+  <div class="box"><h3 id="modalTitle"></h3><div id="modalList"></div>
+    <div id="modalMsg"></div>
+    <button class="ghost" onclick="closeModal()">Fermer</button></div>
+</div>
+
+<script>
+const RICON = ["🪵","🧱","⛏️","🌾"];
+const FIELD_COLOR = {0:"#3f6b3a",1:"#b5713a",2:"#707682",3:"#c8a82f"};
+const FIELD_ICON  = {0:"🌲",1:"🧱",2:"⛏️",3:"🌾"};
+const BICON = {4:"🪚",5:"🧱",6:"🔥",7:"🌀",8:"🍞",9:"📦",10:"🥖",12:"🔨",13:"🏟️",14:"🏛️",
+  15:"🚩",16:"🏪",17:"🏰",18:"⚔️",19:"🐎",20:"🛠️",21:"📚",22:"🕳️",23:"🏯",24:"🏠",25:"👑",
+  26:"💰",27:"💱",28:"⚔️",29:"🐎",30:"🧱",31:"🧱",32:"🧱",33:"🪨",34:"🍺",35:"🪤",36:"🦸",40:"🐴"};
+// Images de bâtiments (découpées du sprite kirilloid/travian t4). L'id de bâtiment
+// est directement l'index de cellule du sprite : on sert b{id}.png. Les emojis
+// ci-dessus restent en repli si l'image manque.
+const BIMG_IDS = new Set([0,1,2,3,4,5,6,7,8,9,10,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40]);
+function bimg(id){ return BIMG_IDS.has(id) ? `img/buildings/b${id}.png` : null; }
+// disposition des 18 champs en diamant + cœur du village au centre
+const FIELD_POS = {1:[3,0],2:[2,1],3:[4,1],4:[1,2],5:[3,2],6:[5,2],7:[0,3],8:[1,3],9:[2,3],
+  10:[4,3],11:[5,3],12:[6,3],13:[1,4],14:[3,4],15:[5,4],16:[2,5],17:[4,5],18:[3,6]};
+
+let LAST=null, CURRENT=null, ALLV=[], SLOTMAP={};
+
+function fmtCost(c){ return `🪵${c[0]} 🧱${c[1]} ⛏️${c[2]} 🌾${c[3]}`; }
+function fmtTimer(s){ const m=Math.max(0,s|0);
+  const h=Math.floor(m/3600), mm=Math.floor(m%3600/60), ss=Math.floor(m%60);
+  return (h?h+":":"")+String(mm).padStart(2,"0")+":"+String(ss).padStart(2,"0"); }
+function shade(hex,a){ const c=parseInt(hex.slice(1),16);
+  const k=v=>Math.max(0,Math.min(255,v));
+  return `rgb(${k((c>>16)+a)},${k(((c>>8)&255)+a)},${k((c&255)+a)})`; }
+
+function iso(cells){
+  const TW=66,TH=34,D=13,PAD=34;
+  cells.forEach(c=>{ c.x=(c.gx-c.gy)*TW/2; c.y=(c.gx+c.gy)*TH/2; });
+  const xs=cells.map(c=>c.x), ys=cells.map(c=>c.y);
+  const minx=Math.min(...xs)-TW/2-PAD, miny=Math.min(...ys)-PAD;
+  const W=Math.max(...xs)+TW/2+PAD-minx, H=Math.max(...ys)+TH+D+PAD-miny;
+  cells.sort((a,b)=>(a.gx+a.gy)-(b.gx+b.gy));
+  let s=`<svg viewBox="${minx} ${miny} ${W} ${H}" style="width:100%;max-height:62vh">`;
+  for(const p of cells){ const x=p.x,y=p.y;
+    const top=`${x},${y} ${x+TW/2},${y+TH/2} ${x},${y+TH} ${x-TW/2},${y+TH/2}`;
+    const lft=`${x-TW/2},${y+TH/2} ${x},${y+TH} ${x},${y+TH+D} ${x-TW/2},${y+TH/2+D}`;
+    const rgt=`${x+TW/2},${y+TH/2} ${x},${y+TH} ${x},${y+TH+D} ${x+TW/2},${y+TH/2+D}`;
+    s+=`<g class="tile3d" ${p.click?`onclick="${p.click}"`:""} ${p.click?'style="cursor:pointer"':''}>
+      <polygon points="${lft}" fill="${shade(p.color,-34)}"/>
+      <polygon points="${rgt}" fill="${shade(p.color,-18)}"/>
+      <polygon points="${top}" fill="${p.color}" stroke="#0007" ${p.dashed?'stroke-dasharray="4 3"':''}/>`;
+    if(p.img) s+=`<image href="${p.img}" x="${x-19}" y="${y+TH/2-31}" width="38" height="38"
+        style="image-rendering:pixelated"/>`;
+    if(p.icon) s+=`<text x="${x}" y="${y+TH/2+6}" text-anchor="middle" font-size="17">${p.icon}</text>`;
+    if(p.badge!=null) s+=`<text x="${x+TW/2-9}" y="${y+TH/2+4}" text-anchor="middle"
+        font-size="12" fill="#fff" font-weight="bold" stroke="#000" stroke-width="0.5">${p.badge}</text>`;
+    s+=`</g>`;
+  }
+  return s+`</svg>`;
+}
+
+async function init(){
+  const data=await (await fetch("/api/villages")).json(); ALLV=data.villages;
+  if(CURRENT==null){ const own=ALLV.find(v=>v.is_own); CURRENT=(own||ALLV[0]).id; }
+  document.getElementById("vsel").innerHTML=`🏰 <select onchange="CURRENT=+this.value;load()">`+
+    ALLV.map(v=>`<option value="${v.id}" ${v.id===CURRENT?"selected":""}>`+
+      `${v.is_own?"★ ":""}${v.name} (${v.x}|${v.y}) — ${v.player}</option>`).join("")+`</select>`;
+  await load();
+}
+async function load(){ render(await (await fetch("/api/village/"+CURRENT)).json()); }
+
+function render(v){
+  LAST=v; SLOTMAP={}; v.slots.forEach(s=>SLOTMAP[s.index]=s);
+  let h=`<h1>⚔️ ${v.name} <small style="opacity:.6">(${v.tribe}, ${v.x}|${v.y})</small></h1>`;
+  for(let i=0;i<4;i++){ const p=v.production[i];
+    h+=`<div class="res"><span class="ico">${RICON[i]}</span>
+      <span class="amt">${v.resources[i]} <small>/ ${v.capacities[i]}</small></span>
+      <span class="${p>=0?'prod-pos':'prod-neg'}">${p>=0?'+':''}${p}/h</span></div>`; }
+  h+=`<div class="res">👥 <b>${v.population}</b></div><span class="badge">⏩ ×${v.server_speed}</span>`;
+  document.getElementById("bar").innerHTML=h;
+
+  // Champs (1..18) + cœur du village
+  const fcells=[];
+  for(const [idx,[gx,gy]] of Object.entries(FIELD_POS)){
+    const s=SLOTMAP[idx]; const bid=s.building_id; const im=bimg(bid);
+    fcells.push({gx,gy, color:FIELD_COLOR[bid], img:im,
+      icon:(im?"":FIELD_ICON[bid])+(s.finish_in!=null?"⏳":""),
+      badge:s.level, click:`openSlot(${idx})`});
+  }
+  fcells.push({gx:3,gy:3, color:"#8a6a44", icon:"🏰"});
+  document.getElementById("fields").innerHTML=iso(fcells);
+
+  // Centre du village (19..40)
+  const ccells=[];
+  for(let s=19;s<=40;s++){ const k=s-19, gx=k%5, gy=Math.floor(k/5);
+    const slot=SLOTMAP[s];
+    if(slot && !slot.empty){
+      const im=bimg(slot.building_id);
+      ccells.push({gx,gy, color:"#7a5e3c", img:im,
+        icon:(im?"":(BICON[slot.building_id]||"🏚️"))+(slot.finish_in!=null?"⏳":""),
+        badge:slot.level, click:`openSlot(${s})`});
+    } else {
+      const can = LAST.is_own && slot && slot.buildable && slot.buildable.length;
+      ccells.push({gx,gy, color:"#4a3a26", dashed:true, icon:can?"➕":"·",
+        click:`openSlot(${s})`});
+    }
+  }
+  document.getElementById("center").innerHTML=iso(ccells);
+
+  // File de construction : on mémorise l'instant de fin absolu (horloge client)
+  // pour décompter le temps restant en direct, chaque seconde.
+  ACTIVE_BUILDS = v.slots.filter(s=>s && s.finish_in!=null)
+    .map(s=>({label:`${s.name} → niveau ${s.target_level}`, end:Date.now()/1000 + s.finish_in}));
+  renderBuilds();
+
+  renderArmy(v);
+}
+
+let ACTIVE_BUILDS=[];
+function renderBuilds(){
+  const box=document.getElementById("builds");
+  if(!ACTIVE_BUILDS.length){ box.innerHTML=""; return; }
+  const now=Date.now()/1000;
+  box.innerHTML=`<div class="queuebox"><b>🔨 Constructions en cours</b>`+
+    ACTIVE_BUILDS.map(b=>`<div class="cost">${b.label} — `+
+      `<span class="timer">${fmtTimer(b.end-now)}</span></div>`).join("")+`</div>`;
+}
+
+function openSlot(idx){
+  const s=SLOTMAP[idx]; if(!s) return;
+  document.getElementById("modalMsg").textContent="";
+  const T=document.getElementById("modalTitle"), L=document.getElementById("modalList");
+  if(s.empty){
+    T.textContent=`Construire — emplacement ${idx}`;
+    L.innerHTML=(s.buildable&&s.buildable.length)? s.buildable.map(b=>
+      `<div class="opt"><span><b>${b.name}</b><div class="cost">${fmtCost(b.cost)} · ⏱️ ${fmtTimer(b.time)}</div></span>
+       ${LAST.is_own?`<button onclick="construct(${idx},${b.id})">Construire</button>`:""}</div>`).join("")
+      : `<div class="cost">Rien à construire ici (prérequis non remplis).</div>`;
+  } else {
+    T.textContent=`${s.name} — niveau ${s.level}`;
+    let body="";
+    if(s.finish_in!=null) body=`<div class="cost">⏳ amélioration → ${s.target_level} (${fmtTimer(s.finish_in)})</div>`;
+    else if(s.next_cost==null) body=`<div class="cost">Niveau maximum atteint.</div>`;
+    else { body=`<div class="cost">Niveau ${s.level+1} : ${fmtCost(s.next_cost)} · ⏱️ ${fmtTimer(s.next_time)}</div>`;
+      if(LAST.is_own) body+=`<button onclick="build(${idx})">Améliorer → ${s.level+1}</button>`; }
+    L.innerHTML=body;
+  }
+  document.getElementById("modal").style.display="flex";
+}
+function closeModal(){ document.getElementById("modal").style.display="none"; }
+
+async function post(url,opt,errId){ const msg=document.getElementById(errId||"msg"); msg.textContent="";
+  const r=await fetch(url,opt||{method:"POST"});
+  if(!r.ok){ const e=await r.json(); msg.textContent="⚠️ "+e.detail; return null; }
+  return await r.json(); }
+async function build(idx){ const d=await post(`/api/village/${CURRENT}/build/${idx}`,null,"modalMsg");
+  if(d){ closeModal(); render(d.village); } }
+async function construct(idx,id){ const d=await post(`/api/village/${CURRENT}/construct/${idx}/${id}`,null,"modalMsg");
+  if(d){ closeModal(); render(d.village); } }
+async function train(bid,idx){ const q=Math.max(1,parseInt(document.getElementById(`q_${bid}_${idx}`).value)||1);
+  const d=await post(`/api/village/${CURRENT}/train/${bid}/${idx}/${q}`); if(d) render(d.village); }
+
+async function sendArmy(){
+  const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("send_"+i);
+    units[i]=el?(parseInt(el.value)||0):0; }
+  const body={target_id:+document.getElementById("sendTarget").value,
+    kind:document.getElementById("sendKind").value, units};
+  const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(d){ document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`;
+    render(d.village); loadReports(); }
+}
+
+function renderArmy(v){
+  const army=document.getElementById("army");
+  // Le rafraîchissement périodique (setInterval load) reconstruit ce bloc : on
+  // mémorise les valeurs saisies (quantités d'entraînement/envoi, cible, type)
+  // pour ne pas les remettre à zéro pendant que l'utilisateur les remplit.
+  const saved={};
+  army.querySelectorAll("input,select").forEach(el=>{ if(el.id) saved[el.id]=el.value; });
+  const troops=v.troops.filter(t=>t.count>0);
+  let h=`<div class="cost" style="margin-bottom:6px">🍞 entretien troupes : ${v.troop_upkeep}/h</div><div class="bldlist">`;
+  h+=`<div class="bld"><div class="name">Troupes</div>`+(troops.length?
+    troops.map(t=>`<div class="cost">⚔️ ${t.name} : <b>${t.count}</b></div>`).join(""):
+    `<div class="cost" style="opacity:.6">aucune</div>`)+`</div>`;
+  if(v.training.length) h+=`<div class="bld"><div class="name">En formation</div>`+
+    v.training.map(t=>`<div class="cost">${t.unit} ×${t.remaining} (${fmtTimer(t.next_in)})</div>`).join("")+`</div>`;
+  if(v.movements&&v.movements.length) h+=`<div class="bld"><div class="name">Mouvements</div>`+
+    v.movements.map(m=>`<div class="cost">${m.dir==="in"?"➡️":"⬅️"} ${m.phase==="back"?"retour":m.kind} ×${m.n} (${fmtTimer(m.arrive_in)})</div>`).join("")+`</div>`;
+  h+=`</div>`;
+  if(v.is_own){
+    for(const m of v.military){
+      h+=`<div style="margin-top:10px"><b>${m.building} (niv ${m.level})</b><div class="bldlist" style="margin-top:6px">`;
+      for(const u of m.units) h+=`<div class="bld"><div class="name">${u.name}</div>
+        <div class="cost">${fmtCost(u.cost)}</div><div class="cost">⏱️ ${u.time}s/u</div>
+        <input id="q_${m.building_id}_${u.index}" type="number" min="1" value="1" style="width:58px">
+        <button onclick="train(${m.building_id},${u.index})">Entraîner</button></div>`;
+      h+=`</div></div>`;
+    }
+    if(troops.length){
+      const tg=ALLV.filter(x=>x.id!==v.id);
+      h+=`<div style="margin-top:12px"><b>Envoyer une armée</b><div style="margin:6px 0">
+        Cible : <select id="sendTarget">`+tg.map(x=>`<option value="${x.id}">${x.name} (${x.x}|${x.y}) — ${x.player}</option>`).join("")+`</select>
+        Type : <select id="sendKind"><option value="raid">Razzia</option>
+          <option value="attack">Attaque</option><option value="reinforce">Renfort</option></select></div>
+        <div class="bldlist">`;
+      for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
+        <input id="send_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
+      h+=`</div><button style="margin-top:6px" onclick="sendArmy()">🚀 Envoyer</button></div>`;
+    }
+  }
+  army.innerHTML=h;
+  army.querySelectorAll("input,select").forEach(el=>{
+    if(el.id && saved[el.id]!=null) el.value=saved[el.id]; });
+}
+
+let TAB="village", LAST_SEEN_T=0;
+function showTab(name){ TAB=name;
+  document.getElementById("villageView").style.display = name==="village"?"":"none";
+  document.getElementById("reportsView").style.display = name==="reports"?"":"none";
+  document.getElementById("tab_village").className = name==="village"?"":"ghost";
+  document.getElementById("tab_reports").className = name==="reports"?"":"ghost";
+  if(name==="reports") loadReports();
+}
+
+function fmtDate(ts){ return new Date(ts*1000).toLocaleString("fr-FR",
+  {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }
+
+async function loadReports(){
+  const d=await (await fetch("/api/reports")).json();
+  const reps=d.reports;
+  const box=document.getElementById("reports");
+  box.innerHTML=reps.length ? reps.map(r=>{ const b=r.body; let line="";
+    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`;
+    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`;
+    else line="renfort";
+    return `<div class="bld" style="text-align:left;margin-bottom:6px">
+      <b>${r.title}</b> <small style="opacity:.55">${fmtDate(r.created_at)}</small>
+      <div class="cost">${line}</div></div>`;
+  }).join("") : `<div class="cost" style="opacity:.6">aucun rapport</div>`;
+  // Consulter l'onglet « marque comme lu » ; sinon on affiche le compteur.
+  if(TAB==="reports" && reps.length) LAST_SEEN_T=reps[0].created_at;
+  const n=(TAB==="reports")?0:reps.filter(r=>r.created_at>LAST_SEEN_T).length;
+  const badge=document.getElementById("repBadge");
+  badge.textContent=n; badge.style.display=n?"inline-block":"none";
+}
+
+setInterval(load,4000); setInterval(loadReports,6000);
+// Décompte live de la file de construction ; recharge dès qu'un ordre se termine.
+setInterval(()=>{ if(!ACTIVE_BUILDS.length) return;
+  const now=Date.now()/1000;
+  if(ACTIVE_BUILDS.some(b=>b.end-now<=0)){ ACTIVE_BUILDS=[]; load(); }
+  else renderBuilds();
+}, 1000);
+init().then(loadReports);
+</script>
+</body>
+</html>
