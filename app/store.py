@@ -110,7 +110,9 @@ def init_db() -> None:
             arrive_at REAL NOT NULL,
             target_x INTEGER,            -- coordonnées de la cible (village ou oasis)
             target_y INTEGER,
-            merchants INTEGER NOT NULL DEFAULT 0     -- trade : marchands mobilisés
+            merchants INTEGER NOT NULL DEFAULT 0,    -- trade : marchands mobilisés
+            hero INTEGER NOT NULL DEFAULT 0,         -- attaque/razzia : héros embarqué
+            targets TEXT NOT NULL DEFAULT '[]'       -- siège : ids de bâtiments visés par les catapultes
         );
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,7 +162,8 @@ def init_db() -> None:
         # combat : drapeau hero ; expansion : points de culture cumulés du joueur).
         for col in ("target_x INTEGER", "target_y INTEGER",
                     "merchants INTEGER NOT NULL DEFAULT 0",
-                    "hero INTEGER NOT NULL DEFAULT 0"):
+                    "hero INTEGER NOT NULL DEFAULT 0",
+                    "targets TEXT NOT NULL DEFAULT '[]'"):
             try:
                 c.execute(f"ALTER TABLE movements ADD COLUMN {col}")
             except sqlite3.OperationalError:
@@ -228,13 +231,15 @@ def set_tile_owner(x: int, y: int, owner_id: int | None) -> None:
 
 def insert_movement(origin_id, target_id, owner_id, kind, phase, units, arrive_at,
                     loot=(0, 0, 0, 0), target_x=None, target_y=None, merchants=0,
-                    hero=0) -> int:
+                    hero=0, targets=()) -> int:
     with connect() as c:
         cur = c.execute(
             "INSERT INTO movements(origin_id,target_id,owner_id,kind,phase,units,loot,"
-            "arrive_at,target_x,target_y,merchants,hero) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "arrive_at,target_x,target_y,merchants,hero,targets) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (origin_id, target_id, owner_id, kind, phase, json.dumps(units),
-             json.dumps(list(loot)), arrive_at, target_x, target_y, merchants, hero))
+             json.dumps(list(loot)), arrive_at, target_x, target_y, merchants, hero,
+             json.dumps(list(targets))))
         return cur.lastrowid
 
 

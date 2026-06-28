@@ -152,9 +152,50 @@ Phase 3 en cours (livrée incrémentalement) :
   détenteur (notifié) et la rattache à un village éligible de l'attaquant (`best_eligible_village`,
   préférence à l'origine ; sinon oasis seulement libérée). UI : récap dans le rapport + indice dans
   la modale de case. L'occupation *pacifique* (`occupy`) reste réservée aux oasis libres.
+- ✅ **Siège câblé** (`movement.py`, verrouillé par `tests/test_buildings.test_siege_wiring`) :
+  le calcul existait déjà dans `combat.py` (`result.wall` béliers, `result.buildings` catapultes) ;
+  il est maintenant **câblé**. `send(..., targets=[ids de bâtiments])` conserve les cibles de
+  catapulte (colonne `movements.targets`) ; à la résolution d'une **attaque de village**,
+  `_resolve_battle` résout chaque id en emplacement concret (plus haut niveau, hors muraille,
+  via `_cata_target_slots`), remplit `off.targets` avec les niveaux courants, puis **réapplique**
+  `res.wall` (béliers) et `res.buildings` (catapultes) au défenseur — niveaux **persistés** et
+  récapitulés dans les rapports (`siege` : mur + bâtiments, avant→après). Nombre de cibles
+  distinctes = `catapult_target_limit` (atelier ≥ niv 20 ⇒ 2, sinon 1). Le siège n'agit **qu'en
+  attaque normale**, jamais en razzia (fidélité Travian / TravianZ : les engins ne détruisent rien
+  lors d'un pillage). API : `SendArmy.targets` ; `serialize` expose `siege` (limite + liste de
+  bâtiments visables, `CATA_TARGET_BUILDINGS`) si le village abrite des catapultes. UI : sélecteur(s)
+  « 🎯 Catapultes — cible(s) » dans les deux formulaires d'envoi (rassemblement & carte, village
+  uniquement), récap « 🧱/💥 avant→après » dans les rapports.
 - ⬜ **Combat héros — affinages** : le héros n'est embarqué que depuis son village d'attache
   (pas de relais entre villages) ; pas encore de monture→cavalerie en combat, ni de prise en
   compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.
+
+### Mécaniques Phase 3 restant à implémenter (recoupé code / vrai T4.6 / TravianZ `GameEngine/`)
+Par ordre de rentabilité recommandé :
+1. ⬜ **Conquête de village (loyauté + chefs)** : `is_chief` (Sénateur/Chef/Chef de clan) est défini
+   dans `units.py` mais **utilisé nulle part**. Manque tout le système : **loyauté** par village
+   (0–100, régén +2 / 3 h × niveau résidence/palais/centre de commandement) ; le chef réduit la
+   loyauté sur **attaque normale** (pas razzia) si pas/plus de bâtiment d'administration dans la
+   cible, cible ≠ capitale, ≠ unique village du défenseur, assez de points de culture, et le chef
+   survit ; à **0 % → changement de propriétaire** (troupes du village conquis perdues même en
+   déplacement, niveaux −1 si avatar plus petit). Source chiffres : `kirilloid/conq.php`.
+2. ⬜ **Hôtel de ville / célébrations** : `TOWNHALL` (id 23) existe (`buildings.py`, `effects.py`)
+   mais les **petite/grande célébrations** (points de culture ; la grande débloque le bonus de
+   conquête ±5 %/chef) ne sont pas implémentées. À brancher sur la culture déjà gérée
+   (`expansion.py`).
+3. ⬜ **Alliances** : ambassade = « à venir » (`web/index.html`). Création/adhésion, diplomatie
+   (confédération/guerre/NAP) et surtout les **bonus d'alliance T4.6** (philosophie, métallurgie,
+   recrutement, commerce…). Réf. TravianZ `Alliance.php`. Dépend d'avoir plusieurs joueurs.
+4. ⬜ **Endgame Natars** : **artefacts** (mi-partie, butin sur villages Natars, bonus
+   uniques/petits/grands — `effects.py` réserve déjà les emplacements de trésor) et **Merveille du
+   Monde** (fin de partie). Réf. TravianZ `Artifacts.php`. Lourd.
+5. ⬜ **Annexes** (TravianZ `GameEngine/`) : **farm list** (razzias groupées T4), **messagerie
+   joueur-à-joueur** (`Message.php` ; on a les rapports, pas les MP), **classements/statistiques**
+   (`Ranking.php`), NPC trader / bourse du marché (à décider si dans le périmètre), médailles,
+   protection débutant.
+
+> Note : la **famine** est déjà faite (`village.py._starve` : grenier vide + prod de blé négative →
+> mort de troupes), ne pas la relister comme manquante.
 
 Puis Phase 4 (API agents : schéma observation/action, bot scripté, puis agents LLM via le
 Claude Agent SDK).

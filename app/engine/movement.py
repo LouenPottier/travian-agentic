@@ -163,17 +163,25 @@ def _process_trade_routes_locked(now: float) -> None:
         store.update_trade_route_next_run(r["id"], nxt)
 
 
+def catapult_target_limit(v) -> int:
+    """Nombre de cibles distinctes que les catapultes peuvent viser : 2 à partir
+    d'un atelier de niveau 20 (vrai Travian), sinon 1."""
+    return 2 if V.building_levels(v).get(B.WORKSHOP, 0) >= 20 else 1
+
+
 def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
          units: list[int], now: float | None = None,
          target_x: int | None = None, target_y: int | None = None,
-         with_hero: bool = False) -> dict:
+         with_hero: bool = False, targets: list[int] | None = None) -> dict:
     """Envoie une armée vers un village (`target_id`) **ou** une oasis (`target_x/y`).
 
     Cible village : `target_id` renseigné. Cible oasis : `target_id=None` et
     coordonnées de la case (qui doit être une oasis ; on n'attaque pas une vallée
     vide). Les oasis ne peuvent recevoir que des razzias/attaques, pas de renfort.
     `with_hero` : envoie aussi le héros (s'il est présent dans ce village), pour les
-    attaques/razzias uniquement.
+    attaques/razzias uniquement. `targets` : ids de bâtiments visés par les catapultes
+    (siège) — pris en compte uniquement sur une **attaque** de village, plafonné par
+    l'atelier (cf. `catapult_target_limit`).
     """
     now = now or _time.time()
     origin = store.load_village(origin_id)
@@ -229,12 +237,19 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
         origin.away[i] += units[i]
     store.save_village(origin)
 
+    # Cibles de catapulte : conservées seulement pour une attaque de village
+    # (les béliers s'occupent du mur tout seuls ; pas de siège sur oasis/razzia,
+    # cf. _resolve_battle). On plafonne dès l'envoi par l'atelier de l'origine.
+    cata = []
+    if kind == "attack" and target_id is not None and targets:
+        cata = [int(t) for t in targets][:catapult_target_limit(origin)]
+
     secs = travel_seconds(origin.x, origin.y, tx, ty,
                           origin.tribe, units, origin.server_speed)
     arrive_at = now + secs
     mid = store.insert_movement(origin_id, target_id, player_id, kind, "outbound",
                                 units, arrive_at, target_x=tx, target_y=ty,
-                                hero=hero_flag)
+                                hero=hero_flag, targets=cata)
     return {"id": mid, "arrive_in": round(secs)}
 
 
@@ -248,11 +263,49 @@ def _build_place(target: V.Village) -> C.Place:
                    wall_level=wall_level, wall_bonus=wall_bonus)
 
 
-def _resolve_battle(origin, target, units, kind, now, att_hero=None):
+def _wall_slot(target: V.Village) -> int | None:
+    """Index de l'emplacement de muraille (présent, niveau > 0), sinon None."""
+    for si, s in target.slots.items():
+        if BLD.get(s.building_id).slot == "wall" and s.level > 0:
+            return si
+    return None
+
+
+def _cata_target_slots(target: V.Village, building_ids: list[int],
+                       limit: int) -> list[int]:
+    """Résout les ids de bâtiments visés en index d'emplacements concrets de la cible.
+
+    Pour chaque id demandé (dédupliqué, plafonné par `limit`), on retient
+    l'emplacement de plus haut niveau de ce type (>0), hors muraille (béliers). Les
+    types absents de la cible sont ignorés (catapultes « perdues », fidélité Travian).
+    """
+    slots: list[int] = []
+    seen: set[int] = set()
+    for bid in building_ids:
+        if bid in seen or len(slots) >= limit:
+            continue
+        seen.add(bid)
+        if BLD.get(bid).slot == "wall":
+            continue
+        cands = [(si, s.level) for si, s in target.slots.items()
+                 if s.building_id == bid and s.level > 0]
+        if not cands:
+            continue
+        cands.sort(key=lambda c: (-c[1], c[0]))
+        slots.append(cands[0][0])
+    return slots
+
+
+def _resolve_battle(origin, target, units, kind, now, att_hero=None,
+                    cata_targets=None):
     """Résout un combat à l'arrivée et renvoie (survivants, butin, hero_alive).
 
     `att_hero` : héros de l'attaquant (Hero) s'il accompagne l'armée. Le héros du
     défenseur (présent dans la cible) est chargé et renforce la défense.
+    `cata_targets` : ids de bâtiments visés par les catapultes (siège). Le siège
+    (démolition de muraille par les béliers, de bâtiments par les catapultes) n'est
+    **persisté que sur une attaque normale** (`kind=="attack"`), jamais en razzia
+    (fidélité Travian / TravianZ : les engins ne détruisent rien lors d'un pillage).
     """
     from app.engine import hero as H
     # Pièges du trappeur (Gaulois) : capture pré-combat des assaillants. Jusqu'à
@@ -267,6 +320,7 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None):
     hero_alive = True
     def_hero = None
     off_losses = def_losses = 0.0
+    siege = {"mur": None, "degats": []}  # récap destructions (attaque seulement)
 
     if not no_battle:
         off = C.Off(units=UNITS[origin.tribe], numbers=list(fight),
@@ -287,9 +341,36 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None):
             place.def_extra += H.combat_power(def_hero)
             place.def_bonus_extra = H.effective(def_hero)["def_bonus"]
 
+        # Siège : ciblage des catapultes (attaque normale uniquement). On résout les
+        # ids demandés en emplacements concrets et on passe leurs niveaux au moteur,
+        # qui calcule le niveau restant après démolition (béliers→mur, catas→cibles).
+        cata_slots = []
+        if kind == "attack":
+            has_cats = any(fight[i] for i in range(10)
+                           if UNITS[origin.tribe][i].is_catapult)
+            if has_cats and cata_targets:
+                cata_slots = _cata_target_slots(
+                    target, list(cata_targets), catapult_target_limit(origin))
+            off.targets = [target.slots[si].level for si in cata_slots]
+
         res = C.combat(place, off, [deff])
         off_losses, def_losses = res.off_losses, res.def_losses
         target.troops = [round(target.troops[i] * (1 - def_losses)) for i in range(10)]
+
+        # Persistance du siège (attaque seulement) : niveaux réappliqués au défenseur.
+        if kind == "attack":
+            wall_slot = _wall_slot(target)
+            if wall_slot is not None and res.wall != target.slots[wall_slot].level:
+                siege["mur"] = {"batiment": BLD.get(target.slots[wall_slot].building_id).name,
+                                "avant": target.slots[wall_slot].level, "apres": res.wall}
+                target.slots[wall_slot].level = res.wall
+            for si, newlvl in zip(cata_slots, res.buildings):
+                before = target.slots[si].level
+                if newlvl != before:
+                    siege["degats"].append({
+                        "batiment": BLD.get(target.slots[si].building_id).name,
+                        "avant": before, "apres": newlvl})
+                    target.slots[si].level = newlvl
 
     survivors = [round(fight[i] * (1 - off_losses)) for i in range(10)]
 
@@ -322,12 +403,12 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None):
         "type": "offensive", "cible": target.name, "kind": kind,
         "envoyees": list(units), "survivantes": survivors, "captures": trapped,
         "pertes_pct": round(off_losses * 100), "butin": loot,
-        "hero": att_hero is not None, "hero_alive": hero_alive})
+        "hero": att_hero is not None, "hero_alive": hero_alive, "siege": siege})
     store.add_report(target.player_id, now, f"🛡️ Défense de {target.name}", {
         "type": "defensive", "attaquant": origin.name, "kind": kind,
         "def_avant": def_before, "def_apres": target.troops, "captures": trapped,
         "pertes_pct": round(def_losses * 100), "butin_pille": loot,
-        "hero_def": def_hero is not None})
+        "hero_def": def_hero is not None, "siege": siege})
     return survivors, loot, hero_alive
 
 
@@ -484,8 +565,9 @@ def _process_due_locked(now: float) -> int:
         loot = (0, 0, 0, 0)
         if m["target_id"] is not None:
             V.tick(target, now)
+            cata_targets = json.loads(m["targets"]) if m["targets"] else []
             survivors, loot, hero_alive = _resolve_battle(
-                origin, target, units, m["kind"], now, att_hero)
+                origin, target, units, m["kind"], now, att_hero, cata_targets)
         else:
             tile = store.get_tile(m["target_x"], m["target_y"])
             survivors, hero_alive = _resolve_oasis(

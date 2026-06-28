@@ -176,14 +176,65 @@ def test_great_barracks_trains():
     print("✅ grande caserne : mêmes unités, coût ×3, file dédiée")
 
 
+def test_siege_wiring():
+    """Siège câblé : une attaque avec béliers + catapultes démolit la muraille et le
+    bâtiment ciblé (niveaux persistés chez le défenseur, récap dans le rapport) ;
+    une razzia identique ne détruit rien (le siège n'agit qu'en attaque normale)."""
+    store.DB_PATH = Path(tempfile.mkdtemp()) / "siege.db"
+    store.init_db()
+    pid = store.create_player("Att", Tribe.ROMANS)
+    did = store.create_player("Def", Tribe.GAULS)
+    now = time.time()
+
+    def make_def(x):
+        d = V.new_village(f"Def{x}", Tribe.GAULS, server_speed=100, x=x, y=0, player_id=did)
+        d.troops[0] = 10                                   # défense faible (10 phalanges)
+        d.slots[40] = V.Slot(building_id=B.PALISADE, level=10)    # muraille niv 10
+        d.slots[20] = V.Slot(building_id=B.MARKETPLACE, level=10)  # cible niv 10
+        return store.insert_village(d)
+
+    def arm_attacker():
+        a = store.load_village(att.id)
+        a.troops = [500, 0, 0, 0, 0, 0, 20, 50, 0, 0]     # légionnaires + béliers + catas
+        a.away = [0] * 10
+        store.save_village(a)
+
+    att = V.new_village("Att", Tribe.ROMANS, server_speed=100, x=0, y=0, player_id=pid)
+    att = store.insert_village(att)
+    arm_attacker()
+
+    # Attaque normale ciblant la place de marché.
+    d1 = make_def(1)
+    units = [500, 0, 0, 0, 0, 0, 20, 50, 0, 0]
+    info = M.send(att.id, d1.id, pid, "attack", units, now, targets=[B.MARKETPLACE])
+    M.process_due(now + info["arrive_in"] + 1)
+    d1b = store.load_village(d1.id)
+    assert d1b.slots[40].level < 10, ("mur non démoli", d1b.slots[40].level)
+    assert d1b.slots[20].level < 10, ("marché non démoli", d1b.slots[20].level)
+    rep = next(r for r in store.reports_for(pid) if r["body"].get("type") == "offensive")
+    assert rep["body"]["siege"]["mur"], rep["body"]["siege"]
+    assert rep["body"]["siege"]["degats"], rep["body"]["siege"]
+    print(f"✅ siège attaque : mur 10→{d1b.slots[40].level}, marché 10→{d1b.slots[20].level}")
+
+    # Razzia identique : aucune destruction persistée.
+    arm_attacker()
+    d2 = make_def(2)
+    info2 = M.send(att.id, d2.id, pid, "raid", units, now, targets=[B.MARKETPLACE])
+    M.process_due(now + info2["arrive_in"] + 1)
+    d2b = store.load_village(d2.id)
+    assert d2b.slots[40].level == 10 and d2b.slots[20].level == 10, "razzia ne détruit rien"
+    print("✅ razzia : aucune destruction (siège réservé à l'attaque normale)")
+
+
 def main():
     test_research_gating()
     test_smithy_combat()
     test_trapper()
     test_traps_in_combat()
     test_great_barracks_trains()
+    test_siege_wiring()
     print("\n✅ Mécaniques de bâtiments (académie / forge / trappeur / pièges / "
-          "grande caserne) validées")
+          "grande caserne / siège) validées")
 
 
 if __name__ == "__main__":

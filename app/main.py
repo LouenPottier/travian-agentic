@@ -35,6 +35,14 @@ WEB = Path(__file__).resolve().parent.parent / "web"
 
 HUMAN_PLAYER_ID: int | None = None
 
+# Bâtiments visables par les catapultes (siège) — bâtiments stratégiques du centre.
+# La muraille en est exclue (elle est l'affaire des béliers, automatique).
+CATA_TARGET_BUILDINGS = (
+    B.MAIN_BUILDING, B.RALLY_POINT, B.WAREHOUSE, B.GRANARY, B.MARKETPLACE,
+    B.RESIDENCE, B.PALACE, B.BARRACKS, B.STABLES, B.WORKSHOP, B.ACADEMY,
+    B.SMITHY, B.TOWNHALL, B.TREASURY, B.EMBASSY, B.CRANNY, B.HERO_MANSION,
+)
+
 
 def _find_free_valley(near_x: int, near_y: int, occupied: set[tuple[int, int]]) -> tuple[int, int]:
     """Vallée libre la plus proche d'un point (spirale en anneaux croissants)."""
@@ -194,6 +202,15 @@ def serialize(v: V.Village) -> dict:
                      "health": round(h.health), "status": h.status,
                      "available": h.status == "home" and h.health > 0}
 
+    # Siège : si ce village abrite des catapultes, l'UI propose de viser des
+    # bâtiments lors d'une **attaque** de village. La muraille (béliers) n'est pas
+    # listée. Le nombre de cibles distinctes dépend de l'atelier (≥ niv 20 ⇒ 2).
+    siege = None
+    if any(c > 0 for i, c in enumerate(v.troops) if units[i].is_catapult):
+        siege = {"limit": M.catapult_target_limit(v),
+                 "targets": [{"id": bid, "name": BLD.get(bid).name}
+                             for bid in CATA_TARGET_BUILDINGS]}
+
     # Place de marché : niveau, marchands (total / libres), capacité par marchand.
     market = None
     if M.merchants_total(v) > 0:
@@ -211,7 +228,7 @@ def serialize(v: V.Village) -> dict:
         "troop_upkeep": V.troop_upkeep(v),
         "queue_len": len(v.queue), "max_queue": v.max_queue, "slots": slots,
         "troops": troops, "training": training, "military": military,
-        "movements": moves, "market": market, "hero_here": hero_here,
+        "movements": moves, "market": market, "hero_here": hero_here, "siege": siege,
         "oases": [{"x": o["x"], "y": o["y"], "label": W.oasis_label(o["code"]),
                    "emoji": W.oasis_emoji(o["code"])} for o in v.oases],
         "oasis_slots": {"used": len(v.oases), "max": OAS.max_oases(v)},
@@ -236,6 +253,7 @@ class SendArmy(BaseModel):
     target_x: int | None = None        # cible oasis (coordonnées)
     target_y: int | None = None
     with_hero: bool = False            # embarquer le héros (attaque/razzia)
+    targets: list[int] | None = None   # siège : ids de bâtiments visés (catapultes)
 
 
 @app.get("/api/villages")
@@ -500,7 +518,7 @@ def send_army(village_id: int, body: SendArmy):
     try:
         info = M.send(village_id, body.target_id, HUMAN_PLAYER_ID, body.kind, units,
                       target_x=body.target_x, target_y=body.target_y,
-                      with_hero=body.with_hero)
+                      with_hero=body.with_hero, targets=body.targets)
     except M.MoveError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "arrive_in": info["arrive_in"], "village": serialize(_get(village_id))}
