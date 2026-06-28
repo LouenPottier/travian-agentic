@@ -60,6 +60,12 @@ def seed_world() -> None:
     if not store.is_empty():
         rows = store.list_villages()
         HUMAN_PLAYER_ID = next((r["player_id"] for r in rows), None)
+        # Parties antérieures (avant la Phase 3) : créer le héros s'il manque, rattaché
+        # à la première ville du joueur humain.
+        if HUMAN_PLAYER_ID is not None and HERO.load(HUMAN_PLAYER_ID) is None:
+            vids = store.player_villages(HUMAN_PLAYER_ID)
+            if vids:
+                HERO.get_or_create(HUMAN_PLAYER_ID, vids[0])
         return
     HUMAN_PLAYER_ID = store.create_player("Toi", Tribe.GAULS)
     store.insert_village(V.new_village(
