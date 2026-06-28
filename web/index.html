@@ -281,6 +281,13 @@ function buildModal(s){
   else { body+=`<div class="cost">Améliorer → niv ${s.level+1} : ${fmtCost(s.next_cost)} · ⏱️ ${fmtTimer(s.next_time)}</div>`;
     if(LAST.is_own) body+=`<button onclick="build(${s.index})">Améliorer → ${s.level+1}</button>`; }
   L.innerHTML=body;
+  // Le rafraîchissement périodique (load/4s) rappelle buildModal : si on
+  // reconstruisait le panneau fonctionnel pendant une saisie, on détruirait
+  // l'<input>/<select> en cours d'édition (perte de focus, curseur qui saute,
+  // valeur réinitialisée). On laisse donc le panneau figé tant que l'utilisateur
+  // y interagit, et on ne le reconstruit qu'une fois le focus ressorti.
+  const ae=document.activeElement;
+  if(P.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName)) return;
   renderPanel(s, P);
 }
 
@@ -361,7 +368,7 @@ async function loadMarketPanel(P){
   h+=`<div style="margin:6px 0">Vers : <select id="tradeTarget">`+
     d.targets.map(t=>`<option value="${t.id}">${t.is_own?"★ ":""}${t.name} (${t.x}|${t.y}) — ${t.player} · ⏱️ ${fmtTimer(t.travel)}</option>`).join("")+`</select></div>`;
   h+=`<div class="bldlist">`;
-  for(let i=0;i<4;i++) h+=`<div class="bld"><div class="cost">${RICON[i]} (dispo ${d.resources[i]})</div>
+  for(let i=0;i<4;i++) h+=`<div class="bld"><div class="cost">${RICON[i]} (dispo <a href="#" onclick="fillTrade(${i},${Math.floor(d.resources[i])});return false" style="color:#caa15a">${Math.floor(d.resources[i])}</a>)</div>
       <input id="trade_${i}" type="number" min="0" value="0" style="width:72px" oninput="updateMerchantHint()"></div>`;
   h+=`</div><div class="cost" id="merchantHint" style="margin:6px 0;opacity:.8"></div>
       <button onclick="sendResources()">📦 Envoyer les ressources</button>`;
@@ -396,6 +403,7 @@ async function deleteRoute(id){
   const d=await post(`/api/village/${CURRENT}/trade_route/${id}`,{method:"DELETE"},"modalMsg");
   if(d) render(d.village);
 }
+function fillTrade(i,max){ const el=document.getElementById("trade_"+i); if(el){ el.value=max; updateMerchantHint(); } }
 function updateMerchantHint(){
   const m=MODAL_MARKET; if(!m) return;
   let total=0; for(let i=0;i<4;i++){ const el=document.getElementById("trade_"+i); total+=el?(parseInt(el.value)||0):0; }
