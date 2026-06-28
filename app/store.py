@@ -41,6 +41,7 @@ def village_to_dict(v: Village) -> dict:
         "trap_queue": [[t.remaining, t.per_unit, t.next_finish] for t in v.trap_queue],
         "oases": v.oases,
         "prisoners": v.prisoners,
+        "loyalty": v.loyalty,
     }
 
 
@@ -68,6 +69,7 @@ def village_from_row(row: sqlite3.Row) -> Village:
         traps=d.get("traps", 0), trap_queue=trap_queue,
         oases=d.get("oases", []),
         prisoners=d.get("prisoners", []),
+        loyalty=d.get("loyalty", 100.0),
     )
 
 
@@ -423,9 +425,21 @@ def insert_village(v: Village) -> Village:
 
 
 def save_village(v: Village) -> None:
+    """Sauvegarde l'état dynamique. `name` et les colonnes identitaires
+    (player_id, tribe, is_capital) sont aussi écrites : la conquête les modifie."""
     with connect() as c:
-        c.execute("UPDATE villages SET name=?, data=? WHERE id=?",
-                  (v.name, json.dumps(village_to_dict(v)), v.id))
+        c.execute("UPDATE villages SET name=?, player_id=?, tribe=?, is_capital=?, data=? "
+                  "WHERE id=?",
+                  (v.name, v.player_id, int(v.tribe), int(v.is_capital),
+                   json.dumps(village_to_dict(v)), v.id))
+
+
+def delete_movements_by_origin(origin_id: int) -> int:
+    """Supprime tous les mouvements partant d'un village (utilisé à la conquête :
+    les armées du village conquis sont perdues, y compris celles en déplacement)."""
+    with connect() as c:
+        cur = c.execute("DELETE FROM movements WHERE origin_id=?", (origin_id,))
+        return cur.rowcount
 
 
 def load_village(village_id: int) -> Village | None:

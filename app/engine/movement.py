@@ -316,6 +316,8 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
     no_battle = sum(fight) == 0 and att_hero is None
 
     def_before = list(target.troops)
+    def_owner = target.player_id  # capturé avant une éventuelle conquête (le rapport
+                                  # défensif doit aller à l'ancien propriétaire)
     loot = [0, 0, 0, 0]
     hero_alive = True
     def_hero = None
@@ -374,18 +376,50 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
 
     survivors = [round(fight[i] * (1 - off_losses)) for i in range(10)]
 
-    # Butin : capacité de transport des survivants
-    cap = sum(survivors[i] * UNITS[origin.tribe][i].capacity for i in range(10))
-    avail = sum(target.resources)
-    take = min(cap, avail)
-    if avail > 0 and take > 0:
-        for i in range(4):
-            loot[i] = round(take * target.resources[i] / avail)
-            target.resources[i] = max(0.0, target.resources[i] - loot[i])
+    # Conquête : un administrateur (chef/sénateur) survivant réduit la loyauté sur
+    # **attaque normale**, si la cible est éligible (résidence/palais détruit — évalué
+    # APRÈS le siège —, pas une capitale ni l'unique village, culture/slot suffisants).
+    # À 0 % de loyauté ⇒ changement de propriétaire (cf. engine.conquest).
+    from app.engine import conquest as CQ
+    conquest = None
+    loyalty_event = None
+    if kind == "attack" and not no_battle:
+        n_chiefs = CQ.count_chiefs(origin.tribe, survivors)
+        if n_chiefs > 0:
+            ok, reason = CQ.conquer_eligible(target, origin.player_id, now)
+            if ok:
+                before = target.loyalty
+                drop = CQ.loyalty_drop(origin.tribe, n_chiefs)
+                target.loyalty = max(0.0, before - drop)
+                if target.loyalty <= 0.0:
+                    conquest = CQ.conquer_village(target, origin.player_id,
+                                                  origin.tribe, survivors, now)
+                loyalty_event = {"chefs": n_chiefs, "baisse": round(drop),
+                                 "avant": round(before), "apres": round(target.loyalty),
+                                 "conquis": conquest is not None}
+            else:
+                loyalty_event = {"chefs": n_chiefs, "bloque": reason}
 
-    # Les assaillants capturés deviennent prisonniers du village défenseur.
+    # Butin : capacité de transport des survivants. Sur une **conquête**, les
+    # ressources restent au village (elles changent de propriétaire avec lui) : pas de
+    # butin rapporté.
+    if conquest is None:
+        cap = sum(survivors[i] * UNITS[origin.tribe][i].capacity for i in range(10))
+        avail = sum(target.resources)
+        take = min(cap, avail)
+        if avail > 0 and take > 0:
+            for i in range(4):
+                loot[i] = round(take * target.resources[i] / avail)
+                target.resources[i] = max(0.0, target.resources[i] - loot[i])
+
+    # Assaillants capturés par les pièges : prisonniers du défenseur ; mais si le
+    # village vient d'être conquis, ils rejoignent la garnison du nouveau propriétaire.
     if sum(trapped) > 0:
-        V.add_prisoners(target, origin.player_id, origin.id, int(origin.tribe), trapped)
+        if conquest is not None:
+            for i in range(10):
+                target.troops[i] += trapped[i]
+        else:
+            V.add_prisoners(target, origin.player_id, origin.id, int(origin.tribe), trapped)
     store.save_village(target)
 
     # Héros : XP (unités ennemies tuées) + perte de santé (pertes de son camp).
@@ -398,18 +432,26 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
         H.apply_combat(def_hero, def_losses, att_killed, now)
         H.save(def_hero)
 
-    # Rapports (captures = assaillants piégés ; survivants = ceux qui ont combattu)
-    store.add_report(origin.player_id, now, f"⚔️ Attaque sur {target.name}", {
+    # Rapports (captures = assaillants piégés ; survivants = ceux qui ont combattu).
+    # `loyaute`/`conquete` : effet d'un administrateur (chef/sénateur) sur la cible.
+    conquis = conquest is not None
+    titre_off = (f"👑 Conquête de {target.name}" if conquis
+                 else f"⚔️ Attaque sur {target.name}")
+    store.add_report(origin.player_id, now, titre_off, {
         "type": "offensive", "cible": target.name, "kind": kind,
         "envoyees": list(units), "survivantes": survivors, "captures": trapped,
         "pertes_pct": round(off_losses * 100), "butin": loot,
-        "hero": att_hero is not None, "hero_alive": hero_alive, "siege": siege})
-    store.add_report(target.player_id, now, f"🛡️ Défense de {target.name}", {
+        "hero": att_hero is not None, "hero_alive": hero_alive, "siege": siege,
+        "loyaute": loyalty_event, "conquete": conquis})
+    titre_def = (f"👑 {target.name} a été conquis !" if conquis
+                 else f"🛡️ Défense de {target.name}")
+    store.add_report(def_owner, now, titre_def, {
         "type": "defensive", "attaquant": origin.name, "kind": kind,
         "def_avant": def_before, "def_apres": target.troops, "captures": trapped,
         "pertes_pct": round(def_losses * 100), "butin_pille": loot,
-        "hero_def": def_hero is not None, "siege": siege})
-    return survivors, loot, hero_alive
+        "hero_def": def_hero is not None, "siege": siege,
+        "loyaute": loyalty_event, "conquete": conquis})
+    return survivors, loot, hero_alive, conquis
 
 
 def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
@@ -563,25 +605,41 @@ def _process_due_locked(now: float) -> int:
         from app.engine import hero as H
         att_hero = H.load(m["owner_id"]) if m["hero"] else None
         loot = (0, 0, 0, 0)
+        conquered = False
         if m["target_id"] is not None:
             V.tick(target, now)
             cata_targets = json.loads(m["targets"]) if m["targets"] else []
-            survivors, loot, hero_alive = _resolve_battle(
+            survivors, loot, hero_alive, conquered = _resolve_battle(
                 origin, target, units, m["kind"], now, att_hero, cata_targets)
         else:
             tile = store.get_tile(m["target_x"], m["target_y"])
             survivors, hero_alive = _resolve_oasis(
                 origin, tile, units, m["kind"], now, att_hero)
-        # Les pertes au combat quittent définitivement les effectifs en vol de
-        # l'origine ; les survivants y restent jusqu'à leur retour.
         V.tick(origin, now)
-        for i in range(10):
-            origin.away[i] = max(0, origin.away[i] - (units[i] - survivors[i]))
+        if conquered:
+            # Conquête : les survivants garnisonnent le village conquis ⇒ ils quittent
+            # définitivement les effectifs en vol de l'origine (avec les pertes).
+            for i in range(10):
+                origin.away[i] = max(0, origin.away[i] - units[i])
+        else:
+            # Les pertes au combat quittent définitivement les effectifs en vol de
+            # l'origine ; les survivants y restent jusqu'à leur retour.
+            for i in range(10):
+                origin.away[i] = max(0, origin.away[i] - (units[i] - survivors[i]))
         store.save_village(origin)
         store.delete_movement(m["id"])
         # Le héros mort ne revient pas (status déjà passé à "dead" par apply_combat).
         hero_back = 1 if (att_hero is not None and hero_alive) else 0
-        if sum(survivors) > 0 or hero_back:
+        if conquered:
+            # Seul le héros rentre (s'il survit) ; les troupes restent en garnison.
+            if hero_back:
+                secs = travel_seconds(m["target_x"], m["target_y"], origin.x, origin.y,
+                                      origin.tribe, units, origin.server_speed)
+                store.insert_movement(m["origin_id"], m["target_id"], m["owner_id"],
+                                      m["kind"], "back", [0] * 10, now + secs,
+                                      target_x=m["target_x"], target_y=m["target_y"],
+                                      hero=1)
+        elif sum(survivors) > 0 or hero_back:
             # Retour depuis le lieu du combat (coordonnées de la cible) vers l'origine.
             # Si seul le héros survit, le trajet retour suit sa propre vitesse.
             ret_units = survivors if sum(survivors) > 0 else units
