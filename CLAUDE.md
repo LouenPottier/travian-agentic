@@ -34,10 +34,12 @@ scripts/, tests/
 - **Simulation paresseuse** (pas de tick/seconde) : ressources recalculées à la lecture,
   événements (construction, sortie d'unité, arrivée d'armée) appliqués au passage de leur date.
 - **Vitesse serveur** : production ×N, durées ÷N (= temps accéléré). ×100 par défaut pour tester.
-- **Visuels** : tuiles isométriques en SVG. Les **bâtiments** utilisent les images du sprite
-  `t4/buildings.png` de **kirilloid/travian** (découpées dans `web/img/buildings/b{id}.png`,
-  l'`id` de bâtiment = index de cellule du sprite). Repli emoji si l'image manque
-  (`BICON`/`FIELD_ICON` dans `web/index.html`). Ressources/UI restent en emoji libres.
+- **Visuels** : tuiles isométriques en SVG. Bâtiments **et champs** utilisent les images du
+  sprite `t5/buildings.png` de **kirilloid/travian** (découpées dans `web/img/buildings/b{id}.png`,
+  l'`id` de bâtiment = index de cellule du sprite, identité grâce à l'enum `ID` partagé base/t4/t5).
+  3 bâtiments absents du sprite t5 (place de tournoi 13, résidence 24, palais 25) gardent l'image
+  t4. Repli emoji si l'image manque (`BICON`/`FIELD_ICON` dans `web/index.html`). Ressources/UI
+  restent en emoji libres.
 
 ## Suite prévue
 Phase 3 (carte, marché, expansion 2ᵉ village) puis Phase 4 (API agents : schéma
