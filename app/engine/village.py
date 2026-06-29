@@ -224,8 +224,15 @@ def troop_upkeep(v: Village) -> int:
     mangent toujours le blé de leur village d'origine, comme dans le vrai Travian.
     Les renforts qui ont atteint leur cible sont stationnés (`troops`) dans la
     cible et y consomment donc le blé : on ne les compte plus ici.
+
+    Artefact « diète du soldat » (s'il est actif pour ce village) : consommation
+    réduite par `artifacts.crop_multiplier` (×0,5). Cf. engine.artifacts.
     """
-    return sum((v.troops[i] + v.away[i]) * unit_upkeep(v, i) for i in range(len(v.troops)))
+    base = sum((v.troops[i] + v.away[i]) * unit_upkeep(v, i) for i in range(len(v.troops)))
+    if base and v.player_id is not None:
+        from app.engine import artifacts as ART
+        base = round(base * ART.crop_multiplier(v))
+    return base
 
 
 def net_production(v: Village) -> list[float]:

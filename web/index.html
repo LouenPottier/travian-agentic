@@ -121,7 +121,7 @@ const RICON = ["🪵","🧱","⛏️","🌾"];
 const Bk = {SMITHY:12, MAIN:14, RALLY:15, MARKET:16, EMBASSY:17, BARRACKS:18,
   STABLES:19, WORKSHOP:20, ACADEMY:21, TOWNHALL:23, RESIDENCE:24, PALACE:25,
   TRADE_OFFICE:27, TRAPPER:35, GREAT_BARRACKS:28, GREAT_STABLES:29, HERO_MANSION:36,
-  BREWERY:34};
+  BREWERY:34, TREASURY:26};
 const TRAIN_BUILDINGS = new Set([Bk.BARRACKS, Bk.STABLES, Bk.WORKSHOP, Bk.RESIDENCE,
   Bk.PALACE, Bk.GREAT_BARRACKS, Bk.GREAT_STABLES]);
 const FIELD_COLOR = {0:"#3f6b3a",1:"#b5713a",2:"#707682",3:"#c8a82f"};
@@ -305,6 +305,7 @@ function renderPanel(s, P){
   if(bid===Bk.TRAPPER)  return loadTrapperPanel(P);
   if(bid===Bk.TOWNHALL) return loadCelebrationPanel(P);
   if(bid===Bk.BREWERY)  return loadBreweryPanel(P);
+  if(bid===Bk.TREASURY) return loadTreasuryPanel(P);
   if(bid===Bk.EMBASSY){ P.innerHTML=secTitle("Ambassade")+`<div class="cost" style="opacity:.7">Diplomatie & alliances : à venir.</div>`; return; }
   if(bid===Bk.HERO_MANSION){
     const os=LAST.oasis_slots||{used:0,max:0};
@@ -646,6 +647,30 @@ async function loadBreweryPanel(P){
 async function startBrewery(){
   const d=await post(`/api/village/${CURRENT}/brewery/festival`,null,"modalMsg");
   if(d) render(d.village);
+}
+
+// --- Panneau : trésorerie (artefacts de l'endgame Natars) --------------------
+async function loadTreasuryPanel(P){
+  const t=LAST.treasury||{level:0,slots:0,stored:null,can_store_small:false,can_store_big:false};
+  let h=secTitle("Trésorerie — artefacts");
+  h+=`<div class="cost">🏛️ niveau ${t.level} · ${t.slots} emplacement(s) de trésor`
+    +`<div style="opacity:.6">niv 10 → stocke un <b>petit</b> artefact · niv 20 → <b>grand/unique</b></div></div>`;
+  h+=`<div class="cost">📦 stocké ici : ${t.stored?`<b>${t.stored}</b>`:"<span style='opacity:.6'>vide</span>"}</div>`;
+  // Artefacts du compte (actifs) + ceux encore à conquérir (sur la carte).
+  const d=await (await fetch("/api/artifacts")).json().catch(()=>null);
+  if(MODAL_SLOT==null) return;
+  if(d){
+    h+=secTitle("Artefacts du compte (actifs)");
+    h+=(d.owned&&d.owned.length)? d.owned.map(a=>
+      `<div class="cost">✨ <b>${a.label}</b> — ${a.desc} <span style="opacity:.6">(${a.scope})</span>${a.wired?"":" <span style='opacity:.5'>[effet à venir]</span>"}</div>`).join("")
+      : `<div class="cost" style="opacity:.6">aucun (capture-les sur un village 🏯 Natar avec ton héros)</div>`;
+    if(d.map&&d.map.length){
+      h+=secTitle("À conquérir (villages Natars)");
+      h+=d.map.map(a=>`<div class="cost">🏯 <b>${a.label}</b> en (${a.x}|${a.y}) — ${a.desc}</div>`).join("");
+    }
+  }
+  h+=`<div class="cost" style="opacity:.6;margin-top:6px">Capture : remporte une <b>attaque</b> (pas razzia) avec ton <b>héros</b> contre un village 🏯 Natar détenant un artefact, en ayant ici une trésorerie <b>vide</b> de niveau suffisant.</div>`;
+  P.innerHTML=h;
 }
 
 // --- Vue d'ensemble (lecture seule) : troupes, formation, mouvements ---------
@@ -1005,6 +1030,12 @@ function fmtSiege(s){
   return parts.length?` · `+parts.join(" · "):"";
 }
 
+// Capture d'artefact (attaque héroïque contre un village Natar détenteur).
+function fmtArtefact(a){
+  if(!a) return "";
+  return a.captured ? ` · ✨ artefact capturé : ${a.artefact}` : ` · ✨ ${a.artefact} non capturé (${a.raison})`;
+}
+
 // Effet d'un administrateur (chef/sénateur) sur la loyauté de la cible.
 function fmtLoyalty(b){
   const l=b.loyaute; if(!l) return "";
@@ -1021,7 +1052,8 @@ async function loadReports(){
     const caps=b.captures?b.captures.reduce((a,c)=>a+c,0):0;
     const sg=fmtSiege(b.siege);
     const ly=fmtLoyalty(b);
-    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(caps?` · 🪤 ${caps} piégé(s)`:"")+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"")+sg+ly;
+    const af=fmtArtefact(b.artefact);
+    if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(caps?` · 🪤 ${caps} piégé(s)`:"")+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"")+sg+ly+af;
     else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(caps?` · 🪤 ${caps} capturé(s)`:"")+(b.hero_def?" · 🦸 héros en défense":"")+sg+ly;
     else if(b.type==="oasis"){ const cq=b.conquete;
       const etat=b.occupee?(b.cleared?" · 🎉 garnison détruite":` · garnison restante (${b.garnison_apres})`)
