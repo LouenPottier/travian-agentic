@@ -43,6 +43,7 @@ def village_to_dict(v: Village) -> dict:
         "prisoners": v.prisoners,
         "loyalty": v.loyalty,
         "celebration": v.celebration,
+        "brewery_festival": v.brewery_festival,
     }
 
 
@@ -72,6 +73,7 @@ def village_from_row(row: sqlite3.Row) -> Village:
         prisoners=d.get("prisoners", []),
         loyalty=d.get("loyalty", 100.0),
         celebration=d.get("celebration"),
+        brewery_festival=d.get("brewery_festival"),
     )
 
 
@@ -159,6 +161,19 @@ def init_db() -> None:
             amounts TEXT NOT NULL,          -- json [4]
             interval_hours REAL NOT NULL,   -- cadence en heures (temps de base, ÷vitesse serveur)
             next_run REAL NOT NULL          -- date absolue du prochain envoi
+        );
+        -- Liste de fermes (farm list T4) : cibles de razzia récurrentes d'un village,
+        -- chacune avec un modèle de troupes ; « razzia groupée » = envoi d'un raid sur
+        -- chaque cible (cf. engine.farmlist).
+        CREATE TABLE IF NOT EXISTS farm_targets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_id INTEGER NOT NULL,     -- village qui razzie
+            owner_id INTEGER NOT NULL,
+            target_id INTEGER,              -- village ciblé ; NULL si oasis
+            target_x INTEGER NOT NULL,
+            target_y INTEGER NOT NULL,
+            units TEXT NOT NULL,            -- json [10] (modèle de troupes)
+            label TEXT NOT NULL DEFAULT ''
         );
         """)
         # Migration douce des bases antérieures : colonnes ajoutées au fil des features
@@ -326,6 +341,32 @@ def delete_trade_route(route_id: int, origin_id: int) -> int:
     with connect() as c:
         cur = c.execute("DELETE FROM trade_routes WHERE id=? AND origin_id=?",
                         (route_id, origin_id))
+        return cur.rowcount
+
+
+# --- Liste de fermes (farm list) --------------------------------------------
+def insert_farm_target(origin_id, owner_id, target_id, target_x, target_y,
+                       units, label="") -> int:
+    with connect() as c:
+        cur = c.execute(
+            "INSERT INTO farm_targets(origin_id,owner_id,target_id,target_x,"
+            "target_y,units,label) VALUES (?,?,?,?,?,?,?)",
+            (origin_id, owner_id, target_id, target_x, target_y,
+             json.dumps(list(units)), label))
+        return cur.lastrowid
+
+
+def farm_targets_for(origin_id: int) -> list[dict]:
+    with connect() as c:
+        rows = c.execute("SELECT * FROM farm_targets WHERE origin_id=? ORDER BY id",
+                         (origin_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_farm_target(target_id: int, origin_id: int) -> int:
+    with connect() as c:
+        cur = c.execute("DELETE FROM farm_targets WHERE id=? AND origin_id=?",
+                        (target_id, origin_id))
         return cur.rowcount
 
 

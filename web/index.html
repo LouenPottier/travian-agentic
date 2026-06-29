@@ -119,7 +119,8 @@ const RICON = ["🪵","🧱","⛏️","🌾"];
 // Identifiants de bâtiments (mêmes valeurs que app/data/buildings.py:B).
 const Bk = {SMITHY:12, MAIN:14, RALLY:15, MARKET:16, EMBASSY:17, BARRACKS:18,
   STABLES:19, WORKSHOP:20, ACADEMY:21, TOWNHALL:23, RESIDENCE:24, PALACE:25,
-  TRADE_OFFICE:27, TRAPPER:35, GREAT_BARRACKS:28, GREAT_STABLES:29, HERO_MANSION:36};
+  TRADE_OFFICE:27, TRAPPER:35, GREAT_BARRACKS:28, GREAT_STABLES:29, HERO_MANSION:36,
+  BREWERY:34};
 const TRAIN_BUILDINGS = new Set([Bk.BARRACKS, Bk.STABLES, Bk.WORKSHOP, Bk.RESIDENCE,
   Bk.PALACE, Bk.GREAT_BARRACKS, Bk.GREAT_STABLES]);
 const FIELD_COLOR = {0:"#3f6b3a",1:"#b5713a",2:"#707682",3:"#c8a82f"};
@@ -302,6 +303,7 @@ function renderPanel(s, P){
   if(bid===Bk.SMITHY)   return loadSmithyPanel(P);
   if(bid===Bk.TRAPPER)  return loadTrapperPanel(P);
   if(bid===Bk.TOWNHALL) return loadCelebrationPanel(P);
+  if(bid===Bk.BREWERY)  return loadBreweryPanel(P);
   if(bid===Bk.EMBASSY){ P.innerHTML=secTitle("Ambassade")+`<div class="cost" style="opacity:.7">Diplomatie & alliances : à venir.</div>`; return; }
   if(bid===Bk.HERO_MANSION){
     const os=LAST.oasis_slots||{used:0,max:0};
@@ -475,7 +477,44 @@ function renderRallyPanel(P){
       <span style="opacity:.6">— attaque/razzia, ou renfort vers TES villages (le héros s'y rattache)</span></label>`;
     h+=`<button style="margin-top:6px" onclick="sendArmy()">🚀 Envoyer</button>`;
   }
-  P.innerHTML=h; restoreInputs(P,saved);
+  // Liste de fermes : razzias groupées (réutilise la machinerie de razzia).
+  h+=secTitle("🚜 Liste de fermes (razzia groupée)");
+  if(troops.length && tg.length)
+    h+=`<button style="margin-bottom:6px" onclick="addFarmTarget()">➕ Ajouter la cible ci-dessus (avec les troupes saisies)</button>`;
+  h+=`<div id="farmListBox" class="cost" style="opacity:.6">Chargement…</div>`;
+  P.innerHTML=h; restoreInputs(P,saved); loadFarmList();
+}
+async function loadFarmList(){
+  const box=document.getElementById("farmListBox"); if(!box) return;
+  const d=await (await fetch(`/api/village/${CURRENT}/farmlist`)).json();
+  const ts=d.targets||[];
+  if(!ts.length){ box.style.opacity=.6;
+    box.innerHTML="Aucune cible. Choisis une cible + des troupes ci-dessus puis « Ajouter »."; return; }
+  box.style.opacity=1;
+  box.innerHTML=ts.map(t=>{
+    const u=t.units.map(x=>`${x.name}×${x.count}`).join(", ")||"—";
+    return `<div class="opt"><span>${t.can_raid?"":"⚠️ "}${t.label} — ${u}</span>
+      <button onclick="removeFarmTarget(${t.id})">✕</button></div>`;
+  }).join("")+`<button style="margin-top:6px" onclick="raidFarmList()">🚜 Razzia groupée</button>`;
+}
+async function addFarmTarget(){
+  const tgtEl=document.getElementById("sendTarget"); if(!tgtEl) return;
+  const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("send_"+i); units[i]=el?(parseInt(el.value)||0):0; }
+  const d=await post(`/api/village/${CURRENT}/farmlist`,{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({target_id:+tgtEl.value, units})},"modalMsg");
+  if(d) loadFarmList();
+}
+async function removeFarmTarget(id){
+  const d=await post(`/api/village/${CURRENT}/farmlist/${id}`,{method:"DELETE"},"modalMsg");
+  if(d) loadFarmList();
+}
+async function raidFarmList(){
+  const d=await post(`/api/village/${CURRENT}/farmlist/raid`,null,"modalMsg");
+  if(d){ const r=d.result;
+    document.getElementById("msg").textContent=`🚜 Razzia groupée : ${r.sent.length} envoyée(s)`
+      +(r.skipped.length?` · ${r.skipped.length} sautée(s) (troupes manquantes)`:"");
+    render(d.village); loadReports(); }
 }
 async function sendArmy(){
   const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("send_"+i); units[i]=el?(parseInt(el.value)||0):0; }
@@ -583,6 +622,28 @@ async function loadCelebrationPanel(P){
 }
 async function startCel(type){
   const d=await post(`/api/village/${CURRENT}/celebration/${type}`,null,"modalMsg");
+  if(d) render(d.village);
+}
+
+// --- Panneau : brasserie (Teutons → fête de la bière = bonus d'attaque) -------
+async function loadBreweryPanel(P){
+  const d=await post(`/api/village/${CURRENT}/brewery`,{method:"GET"},"modalMsg");
+  if(MODAL_SLOT==null) return;
+  if(!d){ P.innerHTML=secTitle("Brasserie")+`<div class="cost" style="opacity:.6">Indisponible.</div>`; return; }
+  const pct=Math.round(d.bonus_per_level*d.level*100);
+  let h=secTitle("Fête de la bière");
+  if(d.active){
+    h+=`<div class="cost" style="margin-bottom:6px">🍺 <b>Fête en cours</b> — fin dans ${fmtTimer(d.remaining)} · +${Math.round(d.current_bonus*100)} % d'attaque pour tout le compte</div>`;
+  }
+  h+=`<div class="cost">${fmtCost(d.cost)}</div>
+      <div class="cost">⏱️ ${fmtTimer(d.duration)} · ⚔️ +${pct} % attaque (toutes tes troupes)</div>`;
+  if(d.can_start) h+=`<button onclick="startBrewery()">Lancer la fête</button>`;
+  else h+=`<div class="cost" style="opacity:.6">${d.active?"fête déjà en cours":"brasserie requise"}</div>`;
+  h+=`<div class="cost" style="opacity:.6;margin-top:6px">Brasserie teutonne (capitale). Tant que la fête dure (72 h ÷ vitesse serveur), toutes les troupes du compte attaquent à +1 %/niveau de brasserie.</div>`;
+  P.innerHTML=h;
+}
+async function startBrewery(){
+  const d=await post(`/api/village/${CURRENT}/brewery/festival`,null,"modalMsg");
   if(d) render(d.village);
 }
 
@@ -776,25 +837,31 @@ function collectSiege(siege, prefix){
 
 // Cible courante de la modale de carte (village ou oasis) pour l'envoi d'armée.
 let MAP_TARGET=null;
+let MAP_OWN_OASIS=false;   // l'oasis ciblée est-elle occupée par un de TES villages ?
 function attackForm(){
   if(!LAST || !LAST.is_own)
     return `<div class="cost" style="margin-top:8px;opacity:.85">Sélectionne d'abord un de tes villages (sélecteur en haut) pour envoyer une armée.</div>`;
   const troops=LAST.troops.filter(t=>t.count>0);
   if(!troops.length)
     return `<div class="cost" style="margin-top:8px;opacity:.85">Aucune troupe disponible dans ${LAST.name}.</div>`;
-  const allowReinforce = MAP_TARGET && MAP_TARGET.target_id!=null;
+  const isVillage = MAP_TARGET && MAP_TARGET.target_id!=null;
+  const isOasis = MAP_TARGET && MAP_TARGET.target_id==null && MAP_TARGET.target_x!=null;
+  // Renfort : vers un village, ou vers une oasis QUE TU OCCUPES (garnison défensive).
+  const ownOasis = isOasis && MAP_OWN_OASIS;
+  let kindOpts = ownOasis
+    ? `<option value="reinforce">Renfort (garnison)</option>`
+    : `<option value="raid">Razzia</option><option value="attack">Attaque</option>`
+      + (isVillage?`<option value="reinforce">Renfort</option>`:``);
   const heroAv = LAST.hero_here && LAST.hero_here.available;
   let h=`<div style="margin-top:10px;border-top:1px solid #5a4330;padding-top:8px">
     <b>🚀 Envoyer depuis ${LAST.name}</b>
-    <div style="margin:6px 0">Type : <select id="mapKind">
-      <option value="raid">Razzia</option><option value="attack">Attaque</option>
-      ${allowReinforce?'<option value="reinforce">Renfort</option>':''}</select></div>
+    <div style="margin:6px 0">Type : <select id="mapKind">${kindOpts}</select></div>
     <div class="bldlist">`;
   for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
     <input id="mapunit_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
   h+=`</div>`;
-  if(allowReinforce) h+=siegeOptions(LAST.siege,"map");  // siège : cible village seulement
-  if(heroAv) h+=`<label class="cost" style="display:block;margin-top:6px">
+  if(isVillage) h+=siegeOptions(LAST.siege,"map");  // siège : cible village seulement
+  if(heroAv && !ownOasis) h+=`<label class="cost" style="display:block;margin-top:6px">
     <input type="checkbox" id="mapHero"> 🦸 Envoyer le héros (${LAST.hero_here.name}, ❤️${LAST.hero_here.health})</label>`;
   h+=`<button style="margin-top:8px" onclick="sendFromMap()">🚀 Envoyer</button></div>`;
   return h;
@@ -816,10 +883,14 @@ function occupationBox(o,x,y){
   let h=`<div style="margin-top:10px;border-top:1px solid #5a4330;padding-top:8px">
     <b>🏞️ Occupation de l'oasis</b>`;
   if(o.owner){
-    if(o.owner.is_own) h+=`<div class="cost" style="margin-top:6px">Annexée par <b>${o.owner.name}</b>. Son bonus de production t'est crédité.</div>
-      <button style="margin-top:6px" onclick="abandonOasis(${o.owner.id},${x},${y})">🏳️ Abandonner l'oasis</button>`;
+    if(o.owner.is_own){ const g=o.owner.garrison||[];
+      const gtxt=g.length? g.map(u=>`${u.name} ×${u.count}`).join(", ") : "aucune";
+      h+=`<div class="cost" style="margin-top:6px">Annexée par <b>${o.owner.name}</b>. Son bonus de production t'est crédité.</div>
+      <div class="cost" style="margin-top:4px">🛡️ Garnison : ${gtxt}</div>
+      <div class="cost" style="margin-top:4px;opacity:.7">Tu peux y poster une <b>garnison</b> (Renfort ci-dessus) ; elle défend l'oasis (sans bonus mur/résidence). Elle rentre au village si tu l'abandonnes.</div>
+      <button style="margin-top:6px" onclick="abandonOasis(${o.owner.id},${x},${y})">🏳️ Abandonner l'oasis</button>`; }
     else h+=`<div class="cost" style="margin-top:6px;opacity:.85">Occupée par <b>${o.owner.name}</b> (autre joueur).</div>
-      <div class="cost" style="margin-top:4px;opacity:.7">⚔️ Une attaque/razzia victorieuse (ci-dessus) te la vole et la rattache à un village éligible (manoir niv 10+, ≤ 3 cases, slot libre).</div>`;
+      <div class="cost" style="margin-top:4px;opacity:.7">⚔️ Une <b>attaque</b> (pas une razzia) qui détruit sa garnison te la vole et la rattache à un village éligible (manoir niv 10+, ≤ 3 cases, slot libre).</div>`;
   } else if(o.total_animals>0){
     h+=`<div class="cost" style="margin-top:6px;opacity:.75">Nettoie d'abord les animaux (razzia/attaque) avant de pouvoir l'annexer.</div>`;
   } else if(o.eligible_villages && o.eligible_villages.length){
@@ -885,9 +956,12 @@ async function openTile(x,y){
     const animals=o.animals.length? o.animals.map(a=>`${a.name} ×${a.count}`).join(", ")
       : "aucun animal — oasis libre";
     MAP_TARGET={target_x:x, target_y:y};
+    MAP_OWN_OASIS = !!(o.owner && o.owner.is_own);
     let h=`<div class="cost">Bonus de production : <b>${bonus}</b></div>
       <div class="cost" style="margin-top:6px">🐾 Animaux sauvages : ${animals}</div>`;
-    if(o.total_animals>0) h+=attackForm();
+    // Formulaire d'envoi : pour nettoyer les animaux, reprendre une oasis ennemie
+    // (attaque), ou poster une garnison sur une oasis qu'on occupe (renfort).
+    if(o.total_animals>0 || o.owner) h+=attackForm();
     h+=occupationBox(o,x,y);
     L.innerHTML=h;
   } else { const f=t.valley.fields;
@@ -948,8 +1022,13 @@ async function loadReports(){
     const ly=fmtLoyalty(b);
     if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(caps?` · 🪤 ${caps} piégé(s)`:"")+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"")+sg+ly;
     else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(caps?` · 🪤 ${caps} capturé(s)`:"")+(b.hero_def?" · 🦸 héros en défense":"")+sg+ly;
-    else if(b.type==="oasis"){ const cq=b.conquete; line=`pertes ${b.pertes_pct}%${b.cleared?" · 🎉 oasis nettoyée":" · animaux restants"}`+(cq&&cq.conquered?` · 🏞️ volée à ${cq.from} → ${cq.village}`:(cq&&cq.freed?` · 🏳️ libérée de ${cq.from}`:""))+(b.hero?` · 🦸${b.hero_alive?"":" 💀"}`:""); }
+    else if(b.type==="oasis"){ const cq=b.conquete;
+      const etat=b.occupee?(b.cleared?" · 🎉 garnison détruite":` · garnison restante (${b.garnison_apres})`)
+                          :(b.cleared?" · 🎉 oasis nettoyée":" · animaux restants");
+      line=`pertes ${b.pertes_pct}%${etat}`+(cq&&cq.conquered?` · 🏞️ volée à ${cq.from} → ${cq.village}`:(cq&&cq.freed?` · 🏳️ libérée de ${cq.from}`:""))+(b.hero?` · 🦸${b.hero_alive?"":" 💀"}`:""); }
     else if(b.type==="oasis_lost") line=`🌴 ${b.village} perd l'oasis (${b.coords[0]}|${b.coords[1]})`;
+    else if(b.type==="reinforce_oasis"){ const n=(b.unites||[]).reduce((a,c)=>a+c,0);
+      line=`🛡️ ${n} unité(s) en garnison d'oasis (${b.coords[0]}|${b.coords[1]}) depuis ${b.de}`; }
     else if(b.type==="release") line=`🕊️ libérés de ${b.de}`;
     else if(b.type==="adventure") line=`⭐ +${b.xp} XP · 🪵${b.resources[0]} 🧱${b.resources[1]} ⛏️${b.resources[2]} 🌾${b.resources[3]} · ❤️−${b.health_loss}`+(b.item?` · 🎁 ${b.item}`:"")+(b.died?" · 💀 mort":"");
     else if(b.type==="settle") line=b.ok?`🏕️ ${b.name} fondé en (${b.coords[0]}|${b.coords[1]})`:`fondation impossible (${b.coords[0]}|${b.coords[1]})`;

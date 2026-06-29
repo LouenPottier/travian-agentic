@@ -77,7 +77,7 @@ def building_effect(v, building_id: int, level: int) -> str:
     if building_id == B.RALLY_POINT:
         return "envoi et réception des armées"
     if building_id == B.ARENA:
-        return f"+{_pct(F.p10(level))} % vitesse des troupes (longs trajets)"
+        return f"+{_pct(b.benefit(level))} % vitesse des troupes au-delà de 20 cases"
 
     if building_id == B.RESIDENCE:
         bn = F.residence_benefit(level)
@@ -96,10 +96,12 @@ def building_effect(v, building_id: int, level: int) -> str:
     if building_id == B.STONEMASON:
         return f"+{_pct(F.p10(level))} % durabilité des bâtiments"
     if building_id == B.BREWERY:
-        return f"+{_pct(F.percent(1)(level))} % attaque (Teutons) · fêtes"
+        return (f"+{_pct(b.benefit(level))} % attaque du compte pendant la fête "
+                f"de la bière (Teutons)")
     if building_id == B.TRAPPER:
         return f"jusqu'à {F.trapper_traps(level)} pièges"
     if building_id == B.HORSE_POOL:
-        return "réduit la consommation de blé de la cavalerie (Romains)"
+        return (f"−{_pct(b.benefit(level))} % temps d'entraînement cavalerie · "
+                f"−1 céréale/cavalier aux paliers 10/15/20 (Romains)")
 
     return b.name
