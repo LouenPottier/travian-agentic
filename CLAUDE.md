@@ -271,7 +271,7 @@ Par ordre de rentabilité recommandé :
 3. ⬜ **Alliances** : ambassade = « à venir » (`web/index.html`). Création/adhésion, diplomatie
    (confédération/guerre/NAP) et surtout les **bonus d'alliance T4.6** (philosophie, métallurgie,
    recrutement, commerce…). Réf. TravianZ `Alliance.php`. Dépend d'avoir plusieurs joueurs.
-4. 🟡 **Endgame Natars** — **socle fait**, artefacts & Merveille à venir :
+4. 🟡 **Endgame Natars** — **socle + artefacts faits**, Merveille à venir :
    - ✅ **Villages Natars + carte agrandie** (`app/engine/natars.py`, tribu `Tribe.NATARS`
      + 10 unités dans `app/data/units.py`, verrouillé par `tests/test_natars.py`) :
      6ᵉ tribu **PNJ** (`NPC_TRIBES`, non jouable, non entraînable — `producer=-1` comme
@@ -293,13 +293,31 @@ Par ordre de rentabilité recommandé :
      le **wiki Fandom** (API MediaWiki, infoboxes — cf. en-tête `units.py`), valeurs
      absentes (Éléphant de guerre, vitesses, Baliste/Empereur/Colon) = approximations
      documentées au même titre que les animaux de la Nature.
-   - ⬜ **Artefacts** (mi-partie) : détenus par des villages Natars dédiés, **capturés par
-     le héros** (Trésorerie **vide** niv **10** = petit / **20** = grand·unique, finie à
-     l'impact ; `effects.py` réserve déjà l'effet « emplacements de trésor »). 8 types × 3
-     tailles (petit = village, grand/unique = compte ; max 3 actifs/compte dont 1 compte).
-     Bonus à brancher comme héros/brasserie (vitesse troupes, durabilité bâtiments — lien
-     `place.dur_bonus` déjà câblé —, conso céréales, cachette…). Table `artifacts`, verrou
-     `tests/test_artifacts.py`. Réf. support.travian.com / unofficialtravian (kirilloid muet).
+   - ✅ **Artefacts** (`app/data/artifacts.py` catalogue, `app/engine/artifacts.py`,
+     verrouillé par `tests/test_artifacts.py`) : **8 types × 3 tailles** (petit = effet
+     **village**, grand/unique = effet **compte**). Détenus par des **villages Natars
+     dédiés** (`spawn_artifact_villages`, table `artifacts`, `holder='natar'`, posés vers
+     le centre donc fortement gardés ; seeding idempotent `_ensure_artifacts`). **Capture
+     par le héros** (`try_capture`, branché dans `movement._resolve_battle`) : **attaque
+     normale** (jamais razzia) menée par le **héros présent & survivant**, **garnison
+     vaincue** (défenseurs à 0), **et** une **trésorerie vide** assez haute au **village
+     d'origine** (`can_store` : niv **10** = petit / **20** = grand·unique, cf.
+     `formulas.slots2`) ⇒ l'artefact passe en `holder='player'`, stocké dans cette
+     trésorerie. **Effets branchés** (petit → son village ; grand/unique → tout le
+     compte) : **durabilité des bâtiments** (architecte ×3/4/5, multiplie
+     `place.dur_bonus`/`wall_durability` dans `_build_place`), **vitesse des troupes**
+     (bottes ×1,5/2, divise le trajet **aller** dans `movement.send`), **consommation de
+     céréales** (diète ×0,5, dans `village.troop_upkeep`). Les **5 autres effets**
+     (entraînement, stockage, cachette, espionnage, confusion) sont **catalogués mais pas
+     encore actifs** (`wired=False`, comme les bonus d'alliance à venir). Un **village
+     conquis détache** ses artefacts (inactifs, `release_artifacts_of_village`). API
+     `/api/artifacts` (owned + carte) + `treasury` exposé par `serialize` ; UI : panneau
+     « Trésorerie — artefacts » (modale trésorerie) + récap de capture dans le rapport
+     offensif. ⚠️ **Kirilloid muet** → catalogue, magnitudes et seuils = **approximations
+     documentées** (support.travian.com « Artefacts » / unofficialtravian / wiki Fandom,
+     cf. en-tête `data/artifacts.py`). **Simplifications documentées** : trésorerie **du
+     village d'origine** exigée (pas n'importe lequel) ; vitesse appliquée à l'aller seul ;
+     limite = nombre d'emplacements de trésor (pas de plafond artificiel « 3 actifs »).
    - ⬜ **Merveille du Monde** (endgame, **lourd**) : plans de construction lâchés par des
      villages Natars spéciaux (capture héros), bâtiment **Merveille** (`WORLD_WONDER`, id 39
      déjà défini) à monter **niv 1→100** = condition de victoire ; vagues d'attaques Natars

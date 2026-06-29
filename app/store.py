@@ -175,6 +175,19 @@ def init_db() -> None:
             units TEXT NOT NULL,            -- json [10] (modèle de troupes)
             label TEXT NOT NULL DEFAULT ''
         );
+        -- Artefacts (endgame Natars) : chaque artefact est soit détenu par un village
+        -- Natar (`holder='natar'`, `natar_village_id` renseigné), soit capturé et stocké
+        -- dans la trésorerie d'un village du joueur (`holder='player'`, `owner_id` +
+        -- `village_id`). Cf. engine.artifacts / data.artifacts.
+        CREATE TABLE IF NOT EXISTS artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind INTEGER NOT NULL,           -- 1..8 (type, cf. data.artifacts.TYPES)
+            size TEXT NOT NULL,              -- small | large | unique
+            holder TEXT NOT NULL,            -- natar | player
+            natar_village_id INTEGER,        -- village Natar détenteur (si holder=natar)
+            owner_id INTEGER,                -- joueur détenteur (si holder=player)
+            village_id INTEGER               -- trésorerie de stockage (si holder=player)
+        );
         """)
         # Migration douce des bases antérieures : colonnes ajoutées au fil des features
         # (oasis : target_x/y avec target_id NULL ; commerce : merchants ; héros au
@@ -475,6 +488,73 @@ def count_adventures(player_id: int) -> int:
 def mark_adventure_done(adventure_id: int) -> None:
     with connect() as c:
         c.execute("UPDATE adventures SET state='done' WHERE id=?", (adventure_id,))
+
+
+# --- Artefacts (endgame Natars) ----------------------------------------------
+def artifacts_exist() -> bool:
+    with connect() as c:
+        return c.execute("SELECT COUNT(*) AS n FROM artifacts").fetchone()["n"] > 0
+
+
+def insert_artifact(kind: int, size: str, natar_village_id: int) -> int:
+    """Crée un artefact détenu par un village Natar (non encore capturé)."""
+    with connect() as c:
+        cur = c.execute(
+            "INSERT INTO artifacts(kind,size,holder,natar_village_id) "
+            "VALUES (?,?,'natar',?)", (kind, size, natar_village_id))
+        return cur.lastrowid
+
+
+def artifact_held_by_natar(natar_village_id: int) -> dict | None:
+    """Artefact (non capturé) détenu par ce village Natar, le cas échéant."""
+    with connect() as c:
+        row = c.execute(
+            "SELECT * FROM artifacts WHERE holder='natar' AND natar_village_id=? LIMIT 1",
+            (natar_village_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def artifact_in_village(village_id: int) -> dict | None:
+    """Artefact actuellement stocké dans la trésorerie de ce village (sinon None)."""
+    with connect() as c:
+        row = c.execute(
+            "SELECT * FROM artifacts WHERE holder='player' AND village_id=? LIMIT 1",
+            (village_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def capture_artifact(artifact_id: int, owner_id: int, village_id: int) -> None:
+    """Transfère un artefact à un joueur (stocké dans la trésorerie `village_id`)."""
+    with connect() as c:
+        c.execute(
+            "UPDATE artifacts SET holder='player', owner_id=?, village_id=?, "
+            "natar_village_id=NULL WHERE id=?", (owner_id, village_id, artifact_id))
+
+
+def artifacts_owned_by(owner_id: int) -> list[dict]:
+    """Artefacts capturés (actifs) d'un joueur."""
+    with connect() as c:
+        rows = c.execute("SELECT * FROM artifacts WHERE holder='player' AND owner_id=? "
+                         "ORDER BY id", (owner_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def uncaptured_artifacts() -> list[dict]:
+    """Artefacts encore détenus par des villages Natars (avec leurs coordonnées)."""
+    with connect() as c:
+        rows = c.execute(
+            "SELECT a.*, v.x AS x, v.y AS y, v.name AS village_name "
+            "FROM artifacts a JOIN villages v ON v.id = a.natar_village_id "
+            "WHERE a.holder='natar' ORDER BY a.id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def release_artifacts_of_village(village_id: int) -> None:
+    """Détache tous les artefacts stockés dans un village (à la conquête de ce village)
+    : ils ne disparaissent pas mais cessent d'être stockés (sans trésorerie)."""
+    with connect() as c:
+        c.execute("UPDATE artifacts SET village_id=NULL WHERE holder='player' "
+                  "AND village_id=?", (village_id,))
 
 
 def insert_village(v: Village) -> Village:

@@ -295,6 +295,11 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
         hspeed = H.effective(hero)["speed"] if hero is not None else 1.0
         secs = _leg_seconds(distance(origin.x, origin.y, tx, ty), hspeed,
                             origin.server_speed, arena)
+    # Artefact « bottes ailées » (s'il est actif) : troupes plus rapides ⇒ trajet réduit.
+    # ⚠️ Simplification documentée : appliqué à l'**aller** (cf. engine.artifacts) ; le
+    # trajet retour suit la vitesse ordinaire (comme le bonus n'est lu qu'à l'envoi ici).
+    from app.engine import artifacts as ART
+    secs /= ART.speed_multiplier(origin)
     arrive_at = now + secs
     mid = store.insert_movement(origin_id, target_id, player_id, kind, "outbound",
                                 units, arrive_at, target_x=tx, target_y=ty,
@@ -314,6 +319,11 @@ def _build_place(target: V.Village) -> C.Place:
     # Kirilloid muet sur la valeur → +10 %/niveau (vrai T4, support.travian.com).
     stonemason = V.building_levels(target).get(B.STONEMASON, 0)
     dur = 1.0 + 0.10 * stonemason
+    # Artefact de l'architecte (s'il est actif pour le défenseur) : durabilité ×3/4/5,
+    # cumulée multiplicativement au tailleur de pierre. Cf. engine.artifacts.
+    if target.player_id is not None:
+        from app.engine import artifacts as ART
+        dur *= ART.durability_multiplier(target)
     return C.Place(tribe=int(target.tribe), pop=V.population(target),
                    wall_level=wall_level, wall_bonus=wall_bonus,
                    dur_bonus=dur, wall_durability=dur)
@@ -495,6 +505,13 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
         H.apply_combat(def_hero, def_losses, att_killed, now)
         H.save(def_hero)
 
+    # Artefact : si la cible (village Natar) en détient un, le héros peut le capturer
+    # en remportant l'attaque (garnison vaincue) et avec une trésorerie vide suffisante
+    # au village d'origine. Cf. engine.artifacts.try_capture.
+    from app.engine import artifacts as ART
+    won = not no_battle and sum(target.troops) == 0
+    artefact = ART.try_capture(origin, target, att_hero, hero_alive, kind, won, now)
+
     # Rapports (captures = assaillants piégés ; survivants = ceux qui ont combattu).
     # `loyaute`/`conquete` : effet d'un administrateur (chef/sénateur) sur la cible.
     conquis = conquest is not None
@@ -505,7 +522,7 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
         "envoyees": list(units), "survivantes": survivors, "captures": trapped,
         "pertes_pct": round(off_losses * 100), "butin": loot,
         "hero": att_hero is not None, "hero_alive": hero_alive, "siege": siege,
-        "loyaute": loyalty_event, "conquete": conquis})
+        "loyaute": loyalty_event, "conquete": conquis, "artefact": artefact})
     titre_def = (f"👑 {target.name} a été conquis !" if conquis
                  else f"🛡️ Défense de {target.name}")
     store.add_report(def_owner, now, titre_def, {

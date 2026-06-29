@@ -136,6 +136,11 @@ def conquer_village(target: V.Village, attacker_player_id: int, attacker_tribe: 
         store.set_tile_owner(o["x"], o["y"], None)
     target.oases = []
 
+    # Artefacts stockés ici : détachés (la trésorerie tombe avec le village) ⇒ ils
+    # cessent d'être actifs. Simplification documentée (cf. engine.artifacts) : ils ne
+    # changent pas de propriétaire, ils deviennent simplement non stockés/inactifs.
+    store.release_artifacts_of_village(target.id)
+
     # Armées du village conquis : perdues, y compris en déplacement (suppression des
     # mouvements partant d'ici pour éviter des retours fantômes).
     store.delete_movements_by_origin(target.id)

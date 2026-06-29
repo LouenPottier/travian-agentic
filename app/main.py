@@ -31,6 +31,7 @@ from app.engine import brewery as BRW
 from app.engine import farmlist as FARM
 from app.engine import capital as CAP
 from app.engine import natars as NAT
+from app.engine import artifacts as ART
 from app.data import items as IT
 
 app = FastAPI(title="Travian local — T4.6")
@@ -72,6 +73,17 @@ def _ensure_natars() -> None:
         return
     natar_pid = store.create_player("Natars", Tribe.NATARS, is_npc=True)
     NAT.spawn_natar_villages(natar_pid, SERVER_SPEED)
+
+
+def _ensure_artifacts() -> None:
+    """Crée les villages Natars détenteurs d'artefacts + les artefacts s'ils manquent.
+    Idempotent (migration douce : ajoute les artefacts aux parties déjà créées)."""
+    if store.artifacts_exist():
+        return
+    natar_pid = store.find_player_by_name("Natars")
+    if natar_pid is None:
+        return
+    ART.spawn_artifact_villages(natar_pid, SERVER_SPEED)
 
 
 # Position de départ du joueur humain : **loin du centre**, car la zone centrale
@@ -148,6 +160,7 @@ def seed_world() -> None:
         if HUMAN_PLAYER_ID is not None:
             _relocate_human_start(HUMAN_PLAYER_ID)  # éloigne du centre Natar + 2ᵉ village
         _ensure_natars()  # migration : ajoute les Natars aux mondes déjà créés
+        _ensure_artifacts()  # migration : ajoute les artefacts (villages Natars dédiés)
         return
     HUMAN_PLAYER_ID = store.create_player("Toi", Tribe.GAULS)
     occupied: set[tuple[int, int]] = set()
@@ -171,6 +184,7 @@ def seed_world() -> None:
     cap = store.player_villages(HUMAN_PLAYER_ID)[0]
     HERO.get_or_create(HUMAN_PLAYER_ID, cap)
     _ensure_natars()
+    _ensure_artifacts()
 
 
 seed_world()
@@ -322,6 +336,11 @@ def serialize(v: V.Village) -> dict:
     if V.building_levels(v).get(B.BREWERY, 0) > 0:
         brewery = BRW.brewery_status(v, now)
 
+    # Trésorerie : niveau + emplacements de trésor + artefact stocké (endgame Natars).
+    treasury = None
+    if V.building_levels(v).get(B.TREASURY, 0) > 0:
+        treasury = ART.treasury_status(v)
+
     # Place de marché : niveau, marchands (total / libres), capacité par marchand.
     market = None
     if M.merchants_total(v) > 0:
@@ -345,7 +364,7 @@ def serialize(v: V.Village) -> dict:
         "queue_len": len(v.queue), "max_queue": v.max_queue, "slots": slots,
         "troops": troops, "training": training, "military": military,
         "movements": moves, "market": market, "hero_here": hero_here, "siege": siege,
-        "celebration": celebration, "brewery": brewery,
+        "celebration": celebration, "brewery": brewery, "treasury": treasury,
         "oases": [{"x": o["x"], "y": o["y"], "label": W.oasis_label(o["code"]),
                    "emoji": W.oasis_emoji(o["code"])} for o in v.oases],
         "oasis_slots": {"used": len(v.oases), "max": OAS.max_oases(v)},
@@ -970,6 +989,15 @@ def expansion_state():
     now = time.time()
     M.process_due(now)
     return EXP.expansion_status(HUMAN_PLAYER_ID, now)
+
+
+@app.get("/api/artifacts")
+def artifacts_state():
+    """Artefacts du joueur (capturés/actifs) + artefacts encore à conquérir (carte)."""
+    now = time.time()
+    M.process_due(now)
+    owned = ART.owned_status(HUMAN_PLAYER_ID) if HUMAN_PLAYER_ID is not None else []
+    return {"owned": owned, "map": ART.map_status()}
 
 
 class Settle(BaseModel):
