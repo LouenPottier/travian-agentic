@@ -369,6 +369,12 @@ def _starve(v: Village) -> None:
     pèse le plus sur l'entretien. Si même sans aucune troupe le bilan reste
     négatif (population seule), toutes les troupes meurent et le blé reste à 0.
     """
+    # Villages PNJ (Nature/Natars) : garnison **statique**, jamais affamée (elle ne se
+    # nourrit pas dans ce modèle ; comme la garnison d'oasis, cf. CLAUDE.md). Sans ça la
+    # grosse garnison Natar fondrait à chaque passage du temps (×vitesse serveur).
+    from app.data.tribes import NPC_TRIBES
+    if v.tribe in NPC_TRIBES:
+        return
     units = UNITS[v.tribe]
     # Blé disponible pour les troupes une fois la population nourrie (peut être < 0).
     # `troop_upkeep` inclut les troupes en déplacement, mais on ne peut sacrifier

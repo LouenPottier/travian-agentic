@@ -402,6 +402,13 @@ def get_player(player_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def find_player_by_name(name: str) -> int | None:
+    """Id du premier joueur portant ce nom (sert au seeding idempotent des Natars)."""
+    with connect() as c:
+        row = c.execute("SELECT id FROM players WHERE name=? LIMIT 1", (name,)).fetchone()
+    return row["id"] if row else None
+
+
 # --- Points de culture (expansion) ------------------------------------------
 def get_culture(player_id: int) -> tuple[float, float]:
     """(points cumulés, instant de dernière mise à jour) du joueur."""
@@ -499,6 +506,13 @@ def delete_movements_by_origin(origin_id: int) -> int:
         return cur.rowcount
 
 
+def move_village(village_id: int, x: int, y: int) -> None:
+    """Déplace un village sur la carte (change ses coordonnées). Utilisé au seeding
+    pour relocaliser la capitale humaine hors de la zone Natar (centre)."""
+    with connect() as c:
+        c.execute("UPDATE villages SET x=?, y=? WHERE id=?", (x, y, village_id))
+
+
 def load_village(village_id: int) -> Village | None:
     with connect() as c:
         row = c.execute("SELECT * FROM villages WHERE id=?", (village_id,)).fetchone()
@@ -509,7 +523,8 @@ def list_villages() -> list[dict]:
     """Métadonnées de tous les villages (pour la carte / la liste)."""
     with connect() as c:
         rows = c.execute(
-            "SELECT v.id, v.name, v.x, v.y, v.is_capital, v.player_id, p.name AS player "
+            "SELECT v.id, v.name, v.x, v.y, v.is_capital, v.tribe, v.player_id, "
+            "p.name AS player "
             "FROM villages v JOIN players p ON p.id = v.player_id ORDER BY v.id").fetchall()
     return [dict(r) for r in rows]
 

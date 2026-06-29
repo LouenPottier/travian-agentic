@@ -30,6 +30,7 @@ from app.engine import celebration as CEL
 from app.engine import brewery as BRW
 from app.engine import farmlist as FARM
 from app.engine import capital as CAP
+from app.engine import natars as NAT
 from app.data import items as IT
 
 app = FastAPI(title="Travian local — T4.6")
@@ -64,11 +65,67 @@ def _find_free_valley(near_x: int, near_y: int, occupied: set[tuple[int, int]]) 
     raise RuntimeError("Aucune vallée libre sur la carte.")
 
 
+def _ensure_natars() -> None:
+    """Crée le joueur PNJ Natars + ses villages s'ils n'existent pas encore. Idempotent
+    (migration douce : ajoute les Natars aux parties existantes sans toucher au reste)."""
+    if store.find_player_by_name("Natars") is not None:
+        return
+    natar_pid = store.create_player("Natars", Tribe.NATARS, is_npc=True)
+    NAT.spawn_natar_villages(natar_pid, SERVER_SPEED)
+
+
+# Position de départ du joueur humain : **loin du centre**, car la zone centrale
+# (anneau `NATAR_ZONE_INNER..OUTER`) est occupée par les Natars. On reste bien à
+# l'intérieur du monde (rayon 100) avec de la marge pour s'étendre.
+HUMAN_START = (60, 60)
+
+
+def _relocate_human_start(player_id: int) -> None:
+    """Migration douce des mondes créés avant la zone Natar centrale : si la capitale
+    humaine est encore dans/au bord de la zone Natar (centre), on la **déplace loin**
+    (ses données développées suivent le déplacement), on lui adjoint un **2ᵉ village
+    proche** si elle n'en a pas, et on rapproche le voisin teuton (sinon « voisin » à
+    l'autre bout de la carte). Idempotent : ne re-déplace pas un village déjà éloigné."""
+    vids = store.player_villages(player_id)
+    if not vids:
+        return
+    caps = [store.load_village(v) for v in vids]
+    cap = next((c for c in caps if c.is_capital), caps[0])
+    occupied = {(v["x"], v["y"]) for v in store.list_villages()}
+    if max(abs(cap.x), abs(cap.y)) <= NAT.NATAR_ZONE_OUTER:   # encore au centre
+        occupied.discard((cap.x, cap.y))
+        hx, hy = _find_free_valley(*HUMAN_START, occupied)
+        store.move_village(cap.id, hx, hy)
+        occupied.add((hx, hy))
+    else:
+        hx, hy = cap.x, cap.y
+    if len(vids) < 2:                                          # 2ᵉ village proche
+        sx, sy = _find_free_valley(hx + 2, hy + 1, occupied)
+        occupied.add((sx, sy))
+        store.insert_village(V.new_village(
+            "Mon 2e village", cap.tribe, server_speed=SERVER_SPEED,
+            x=sx, y=sy, player_id=player_id, is_capital=False))
+    npc_id = store.find_player_by_name("Voisin")              # rapprocher le voisin
+    if npc_id is not None:
+        for nv in store.player_villages(npc_id):
+            tv = store.load_village(nv)
+            if max(abs(tv.x), abs(tv.y)) <= NAT.NATAR_ZONE_OUTER:
+                occupied.discard((tv.x, tv.y))
+                nx, ny = _find_free_valley(hx - 3, hy - 2, occupied)
+                store.move_village(tv.id, nx, ny)
+                occupied.add((nx, ny))
+
+
 def seed_world() -> None:
-    """Crée le monde de départ si la base est vide : la carte, toi + un voisin NPC."""
+    """Crée le monde de départ si la base est vide : la carte, toi (loin du centre) +
+    un 2ᵉ village proche + un voisin NPC + les Natars (au centre). Agrandissement de
+    carte **non destructif** : la (ré)insertion des cases est idempotente (INSERT OR
+    IGNORE + terrain déterministe), donc bumper `WORLD_RADIUS` ajoute seulement les
+    nouvelles couronnes sans effacer `game.db`."""
     global HUMAN_PLAYER_ID
     store.init_db()
-    if store.world_is_empty():
+    # Première création OU agrandissement du rayon (la case du bord n'existe pas encore).
+    if store.world_is_empty() or store.get_tile(W.WORLD_RADIUS, 0) is None:
         store.insert_tiles(W.generate_world())
     if not store.is_empty():
         rows = store.list_villages()
@@ -79,19 +136,32 @@ def seed_world() -> None:
             vids = store.player_villages(HUMAN_PLAYER_ID)
             if vids:
                 HERO.get_or_create(HUMAN_PLAYER_ID, vids[0])
+        if HUMAN_PLAYER_ID is not None:
+            _relocate_human_start(HUMAN_PLAYER_ID)  # éloigne du centre Natar + 2ᵉ village
+        _ensure_natars()  # migration : ajoute les Natars aux mondes déjà créés
         return
     HUMAN_PLAYER_ID = store.create_player("Toi", Tribe.GAULS)
+    occupied: set[tuple[int, int]] = set()
+    hx, hy = _find_free_valley(*HUMAN_START, occupied)         # capitale loin du centre
+    occupied.add((hx, hy))
     store.insert_village(V.new_village(
         "Mon village", Tribe.GAULS, server_speed=SERVER_SPEED,
-        x=0, y=0, player_id=HUMAN_PLAYER_ID, is_capital=True))
+        x=hx, y=hy, player_id=HUMAN_PLAYER_ID, is_capital=True))
+    sx, sy = _find_free_valley(hx + 2, hy + 1, occupied)       # 2ᵉ village proche
+    occupied.add((sx, sy))
+    store.insert_village(V.new_village(
+        "Mon 2e village", Tribe.GAULS, server_speed=SERVER_SPEED,
+        x=sx, y=sy, player_id=HUMAN_PLAYER_ID, is_capital=False))
     npc = store.create_player("Voisin", Tribe.TEUTONS, is_npc=True)
-    nx, ny = _find_free_valley(3, 1, {(0, 0)})
+    nx, ny = _find_free_valley(hx - 3, hy - 2, occupied)       # voisin proche de toi
+    occupied.add((nx, ny))
     store.insert_village(V.new_village(
         "Camp teuton", Tribe.TEUTONS, server_speed=SERVER_SPEED,
         x=nx, y=ny, player_id=npc, is_capital=True))
     # Héros du joueur, rattaché à sa capitale.
     cap = store.player_villages(HUMAN_PLAYER_ID)[0]
     HERO.get_or_create(HUMAN_PLAYER_ID, cap)
+    _ensure_natars()
 
 
 seed_world()
@@ -323,7 +393,8 @@ def map_view(cx: int = 0, cy: int = 0, r: int = 7):
         if v is not None:
             cell["kind"] = "village"
             cell["village"] = {"id": v["id"], "name": v["name"], "player": v["player"],
-                               "is_own": v["is_own"], "is_capital": bool(v["is_capital"])}
+                               "is_own": v["is_own"], "is_capital": bool(v["is_capital"]),
+                               "is_natar": v["tribe"] == int(Tribe.NATARS)}
         elif t["kind"] == "oasis":
             owner = by_id.get(t.get("owner_id"))
             cell["oasis"] = {"label": W.oasis_label(t["layout"]),
@@ -348,7 +419,8 @@ def tile_detail(x: int, y: int):
     if v is not None:
         out["kind"] = "village"
         out["village"] = {"id": v["id"], "name": v["name"], "player": v["player"],
-                          "is_own": v["is_own"], "is_capital": bool(v["is_capital"])}
+                          "is_own": v["is_own"], "is_capital": bool(v["is_capital"]),
+                          "is_natar": v["tribe"] == int(Tribe.NATARS)}
     elif t["kind"] == "oasis":
         bonus = W.oasis_bonus(t["layout"])
         res_names = ["bois", "argile", "fer", "céréales"]
