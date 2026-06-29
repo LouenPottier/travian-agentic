@@ -154,6 +154,48 @@ def test_hero_in_combat():
     print(f"✅ héros au combat : XP {round(h.experience)}, santé {round(h.health)}, statut {h.status}")
 
 
+def test_hero_reinforce_rehomes():
+    """Héros envoyé en assistance (renfort) vers un autre de TES villages : il s'y
+    réinstalle (nouveau village de rattachement) à l'arrivée."""
+    fresh()
+    pid = store.create_player("Toi", Tribe.GAULS)
+    other = store.create_player("Ennemi", Tribe.GAULS)
+    now = time.time()
+    v1 = V.new_village("V1", Tribe.GAULS, server_speed=100, x=0, y=0, player_id=pid)
+    v1 = store.insert_village(v1)
+    v2 = V.new_village("V2", Tribe.GAULS, server_speed=100, x=5, y=0, player_id=pid)
+    v2 = store.insert_village(v2)
+    enemy = V.new_village("E", Tribe.GAULS, server_speed=100, x=2, y=2, player_id=other)
+    enemy = store.insert_village(enemy)
+
+    h = H.get_or_create(pid, v1.id, now)
+    # On ne peut renforcer que SES villages avec le héros.
+    try:
+        M.send(v1.id, enemy.id, pid, "reinforce", [0]*10, now, with_hero=True)
+        assert False, "renfort héros vers un ennemi interdit"
+    except M.MoveError:
+        pass
+
+    # Héros seul en renfort vers v2 (units toutes nulles ⇒ vitesse du héros).
+    info = M.send(v1.id, v2.id, pid, "reinforce", [0]*10, now, with_hero=True)
+    h = H.load(pid)
+    assert h.status == "moving" and h.home_village_id == v1.id  # en transit
+    # En déplacement, le héros ne peut PAS partir à l'aventure.
+    aid = store.insert_adventure(pid, 1, 1, "normal", now)
+    try:
+        H.send_to_adventure(pid, aid, now)
+        assert False, "aventure interdite tant que le héros est en déplacement"
+    except H.HeroError:
+        pass
+    M.process_due(now + info["arrive_in"] + 1)
+    h = H.load(pid)
+    assert h.home_village_id == v2.id, "le héros se rattache au village renforcé"
+    assert h.status == "home"
+    rep = next(r for r in store.reports_for(pid) if r["body"].get("type") == "reinforce")
+    assert rep["body"]["hero"], "le rapport doit signaler la ré-attache du héros"
+    print(f"✅ héros réinstallé : v{v1.id} → v{v2.id} (statut {h.status})")
+
+
 def test_production_rates_exact():
     """Production de ressources fidèle au vrai Travian T4 : ressource unique = +10/pt
     sur cette seule ressource ; réparti = +3/pt sur **chacune** des 4 ressources."""

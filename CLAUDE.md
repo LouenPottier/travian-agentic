@@ -233,8 +233,25 @@ Phase 3 en cours (livrée incrémentalement) :
   (`conquest.GREAT_CELEBRATION_BONUS`, branché dans `movement._resolve_battle`). API
   `/api/village/{id}/celebration` (GET / POST `/{type}`) ; UI : panneau « Célébrations » dans
   la modale de l'hôtel de ville ; `serialize` expose la fête en cours.
-- ⬜ **Combat héros — affinages** : le héros n'est embarqué que depuis son village d'attache
-  (pas de relais entre villages) ; pas encore de monture→cavalerie en combat, ni de prise en
+- ✅ **Héros en assistance + changement de rattachement** (`movement.send`/`_process_due_locked`,
+  verrouillé par `tests/test_hero.test_hero_reinforce_rehomes`) : on peut désormais envoyer le
+  héros en **renfort** (`with_hero=True`, `kind="reinforce"`) vers **un de ses propres villages** ;
+  à l'arrivée il s'y **réinstalle** (nouveau `home_village_id`) ⇒ il y défend, y produit et y
+  ressuscite. En transit `status="moving"` (ni production, ni dispo) ; envoi héros **seul**
+  autorisé (units à 0 ⇒ trajet à la vitesse du héros). UI : case « Envoyer le héros » du
+  rassemblement/carte ouverte au renfort (le formulaire s'affiche même sans troupes si le héros
+  est dispo) ; rapport de renfort « 🦸 héros rattaché ici ».
+- ✅ **Capitale / palais / champs > 10** (`app/engine/capital.py`, `village.effective_max_level`,
+  verrouillé par `tests/test_capital.py`) — fidélité recoupée sur **support.travian.com**
+  (« Capital Village ») : (a) seuls les **champs de ressources de la capitale** dépassent le
+  niveau 10 (hors capitale, `enqueue_build`/serialize plafonnent à 10) ; (b) **un seul palais par
+  compte** et **palais ⇄ résidence exclusifs** dans un même village (`available_buildings` +
+  `account_has_palace`, calculé par `main._account_has_palace`) ; (c) **changer de capitale** se
+  fait depuis le **palais** (niv ≥ 1) via `capital.make_capital` — l'ancienne capitale est
+  rétrogradée et ses **champs > 10 ramenés à 10** (sans remboursement, fidèle). API
+  `POST /api/village/{id}/make-capital` (+ `is_capital`/`can_make_capital` exposés par `serialize`) ;
+  UI : panneau « Capitale » dans la modale du palais.
+- ⬜ **Combat héros — affinages** : pas encore de monture→cavalerie en combat, ni de prise en
   compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.
 
 ### Mécaniques Phase 3 restant à implémenter (recoupé code / vrai T4.6 / TravianZ `GameEngine/`)

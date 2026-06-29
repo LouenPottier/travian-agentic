@@ -294,6 +294,7 @@ function buildModal(s){
 function renderPanel(s, P){
   if(!LAST.is_own){ P.innerHTML=""; return; }
   const bid=s.building_id;
+  if(bid===Bk.PALACE)   return renderPalacePanel(s,P);
   if(TRAIN_BUILDINGS.has(bid)) return renderTrainPanel(s,P);
   if(bid===Bk.MARKET)   return loadMarketPanel(P);
   if(bid===Bk.RALLY)    return renderRallyPanel(P);
@@ -354,6 +355,27 @@ function renderTrainPanel(s,P){
     h+=`</div>`;
   }
   P.innerHTML=h+`</div>`; restoreInputs(P,saved);
+}
+
+// --- Panneau : palais (capitale + entraînement colons/chefs) ------------------
+function renderPalacePanel(s,P){
+  let head=secTitle("Capitale");
+  if(LAST.is_capital)
+    head+=`<div class="cost" style="opacity:.85">★ Ce village est déjà ta capitale.</div>`;
+  else if(LAST.can_make_capital)
+    head+=`<button onclick="makeCapital()">🏰 Déclarer comme capitale</button>
+      <div class="cost" style="opacity:.7;margin-top:4px">Un seul palais/capitale par compte. ⚠️ Les champs > 10 de l'ancienne capitale retomberont au niveau 10.</div>`;
+  else
+    head+=`<div class="cost" style="opacity:.7">Palais niveau 1+ requis pour déclarer la capitale.</div>`;
+  P.innerHTML=head+`<div id="palaceTrain" style="margin-top:8px"></div>`;
+  renderTrainPanel(s, document.getElementById("palaceTrain"));
+}
+async function makeCapital(){
+  const d=await post(`/api/village/${CURRENT}/make-capital`,null,"modalMsg");
+  if(d){ let msg="🏰 Capitale déplacée ici.";
+    if(d.reduced&&d.reduced.length) msg+=` ${d.reduced.length} champ(s) de l'ancienne capitale ramené(s) à 10.`;
+    document.getElementById("modalMsg").textContent=msg;
+    render(d.village); load(); }
 }
 
 // --- Panneau : place de marché (commerce) ------------------------------------
@@ -435,8 +457,9 @@ function renderRallyPanel(P){
     }).join("");
   else h+=`<div class="cost" style="opacity:.6">aucun mouvement</div>`;
   const troops=v.troops.filter(t=>t.count>0), tg=ALLV.filter(x=>x.id!==v.id);
+  const heroAv = v.hero_here && v.hero_here.available;
   h+=secTitle("Envoyer une armée");
-  if(!troops.length) h+=`<div class="cost" style="opacity:.6">Aucune troupe disponible.</div>`;
+  if(!troops.length && !heroAv) h+=`<div class="cost" style="opacity:.6">Aucune troupe disponible.</div>`;
   else if(!tg.length) h+=`<div class="cost" style="opacity:.6">Aucun village cible (attaque une oasis via la carte).</div>`;
   else {
     h+=`<div style="margin:6px 0">Cible : <select id="sendTarget">`+
@@ -447,9 +470,9 @@ function renderRallyPanel(P){
       <input id="send_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
     h+=`</div>`;
     h+=siegeOptions(v.siege,"send");
-    if(v.hero_here && v.hero_here.available) h+=`<label class="cost" style="display:block;margin-top:6px">
+    if(heroAv) h+=`<label class="cost" style="display:block;margin-top:6px">
       <input type="checkbox" id="sendHero"> 🦸 Envoyer le héros (${v.hero_here.name}, ❤️${v.hero_here.health})
-      <span style="opacity:.6">— attaque/razzia uniquement</span></label>`;
+      <span style="opacity:.6">— attaque/razzia, ou renfort vers TES villages (le héros s'y rattache)</span></label>`;
     h+=`<button style="margin-top:6px" onclick="sendArmy()">🚀 Envoyer</button>`;
   }
   P.innerHTML=h; restoreInputs(P,saved);
@@ -463,7 +486,7 @@ async function sendArmy(){
   const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
   if(d){ document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`;
-    render(d.village); loadReports(); }
+    render(d.village); loadReports(); updateHeroBadge(); }
 }
 
 // --- Panneau : académie (recherche d'unités) ---------------------------------
@@ -599,7 +622,16 @@ async function loadHero(){
   if(d.detail){ document.getElementById("hero").innerHTML=`<div class="cost">${d.detail}</div>`; return; }
   HERO=d; renderHero(d);
 }
+function heroStatusLabel(d){
+  return d.status==="home"?"au village"
+    :d.status==="adventure"?`en aventure (${fmtTimer(d.busy_in)})`
+    :d.status==="moving"?"🚶 en déplacement"
+    :d.status==="attacking"?"⚔️ au combat"
+    :d.status==="dead"?"💀 mort":d.status;
+}
 function renderHero(d){
+  // « en déplacement » (renfort) et « au combat » comptent comme occupé : pas
+  // d'aventure tant que le héros n'est pas rentré au village (le moteur refuse aussi).
   const busy = d.status!=="home";
   let h=`<div class="bldlist" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">`;
   // Carte d'état
@@ -608,9 +640,7 @@ function renderHero(d){
     <div class="cost">❤️ Santé ${d.health}/100</div>${bar(d.health,100,"#c44")}
     <div class="cost" style="margin-top:6px">⭐ XP ${d.experience} / ${d.xp_next}</div>
     ${bar(d.experience-d.xp_this, d.xp_next-d.xp_this, "#caa15a")}
-    <div class="cost" style="margin-top:6px">Statut : <b>${
-      d.status==="home"?"au village":d.status==="adventure"?`en aventure (${fmtTimer(d.busy_in)})`:
-      d.status==="attacking"?"au combat":d.status==="dead"?"💀 mort":d.status}</b></div>
+    <div class="cost" style="margin-top:6px">Statut : <b>${heroStatusLabel(d)}</b></div>
     <div class="cost">🏠 ${d.home_village} · force ${d.effective.strength} · att +${d.effective.off_bonus}% · déf +${d.effective.def_bonus}%</div>
     <div class="cost">régén ${d.effective.regen_per_day}/j · prod ${d.effective.production_per_hour}/h ${d.res_choice<0?"de chaque":""}(${d.res_choice_label}) · vitesse ${d.effective.speed}</div>`;
   if(d.status==="dead") h+=`<button onclick="reviveHero()">⚰️ Ressusciter (${fmtCost(d.revive_cost)})</button>`;
@@ -655,7 +685,7 @@ function renderHero(d){
     sh+=`</div>`; }
   // Aventures
   sh+=`<h2 style="margin-top:18px">🗺️ Aventures disponibles</h2>`;
-  if(busy) sh+=`<div class="cost" style="opacity:.7">Le héros est occupé (${d.status==="adventure"?fmtTimer(d.busy_in):d.status}).</div>`;
+  if(busy) sh+=`<div class="cost" style="opacity:.7">Le héros est occupé (${heroStatusLabel(d)}) — il ne peut pas partir à l'aventure.</div>`;
   else if(!d.adventures.length) sh+=`<div class="cost" style="opacity:.6">Aucune aventure pour l'instant (elles apparaissent au fil du temps).</div>`;
   else { sh+=`<div class="bldlist">`;
     for(const a of d.adventures){
@@ -777,7 +807,7 @@ async function sendFromMap(){
     with_hero:hx?hx.checked:false, targets:collectSiege(LAST.siege,"map"), ...MAP_TARGET};
   const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
-  if(d){ closeModal(); loadMap(); loadReports();
+  if(d){ closeModal(); loadMap(); loadReports(); updateHeroBadge();
     document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`; }
 }
 
@@ -923,6 +953,8 @@ async function loadReports(){
     else if(b.type==="release") line=`🕊️ libérés de ${b.de}`;
     else if(b.type==="adventure") line=`⭐ +${b.xp} XP · 🪵${b.resources[0]} 🧱${b.resources[1]} ⛏️${b.resources[2]} 🌾${b.resources[3]} · ❤️−${b.health_loss}`+(b.item?` · 🎁 ${b.item}`:"")+(b.died?" · 💀 mort":"");
     else if(b.type==="settle") line=b.ok?`🏕️ ${b.name} fondé en (${b.coords[0]}|${b.coords[1]})`:`fondation impossible (${b.coords[0]}|${b.coords[1]})`;
+    else if(b.type==="reinforce"){ const n=(b.unites||[]).reduce((a,c)=>a+c,0);
+      line=`➕ depuis ${b.de} · ${n} unité(s)`+(b.hero?" · 🦸 héros rattaché ici":""); }
     else line="renfort";
     return `<div class="bld" style="text-align:left;margin-bottom:6px">
       <b>${r.title}</b> <small style="opacity:.55">${fmtDate(r.created_at)}</small>

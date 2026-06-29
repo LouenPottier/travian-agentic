@@ -192,23 +192,8 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
     if sum(units) <= 0 and not with_hero:
         raise MoveError("Aucune troupe sélectionnée.")
 
-    # Héros : on ne l'embarque que sur une attaque/razzia, depuis son village
-    # d'attache, s'il est disponible et en bonne santé.
-    from app.engine import hero as H
-    hero_flag = 0
-    if with_hero:
-        if kind not in ("attack", "raid"):
-            raise MoveError("Le héros n'accompagne que les attaques et razzias.")
-        h = H.load(player_id)
-        if h is None or h.home_village_id != origin_id:
-            raise MoveError("Pas de héros dans ce village.")
-        H.tick(h, origin, now)
-        if h.status != "home" or h.health <= 0:
-            raise MoveError("Le héros n'est pas disponible.")
-        h.status = "attacking"
-        H.save(h)
-        hero_flag = 1
-
+    # Résolution de la cible d'abord (le contrôle d'éligibilité du héros en dépend).
+    target = None
     if target_id is not None:
         target = store.load_village(target_id)
         if target is None:
@@ -225,6 +210,30 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
         if (target_x, target_y) == (origin.x, origin.y):
             raise MoveError("Cible identique à l'origine.")
         tx, ty = target_x, target_y
+
+    # Héros : embarqué sur une attaque/razzia, OU envoyé en **assistance** (renfort)
+    # vers un de tes propres villages — il s'y **réinstalle** (nouveau rattachement)
+    # à l'arrivée. Toujours depuis son village d'attache, disponible et en vie.
+    from app.engine import hero as H
+    hero_flag = 0
+    hero = None
+    if with_hero:
+        if kind == "reinforce":
+            if target is None or target.player_id != player_id:
+                raise MoveError("Le héros ne renforce que tes propres villages.")
+        elif kind not in ("attack", "raid"):
+            raise MoveError("Le héros n'accompagne qu'attaques, razzias et renforts.")
+        hero = H.load(player_id)
+        if hero is None or hero.home_village_id != origin_id:
+            raise MoveError("Pas de héros dans ce village.")
+        H.tick(hero, origin, now)
+        if hero.status != "home" or hero.health <= 0:
+            raise MoveError("Le héros n'est pas disponible.")
+        # « moving » = en transit vers un renfort (ré-attache à l'arrivée) ;
+        # « attacking » = accompagne une attaque/razzia (rentre après le combat).
+        hero.status = "moving" if kind == "reinforce" else "attacking"
+        H.save(hero)
+        hero_flag = 1
 
     V.tick(origin, now)
     for i in range(10):
@@ -244,8 +253,13 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
     if kind == "attack" and target_id is not None and targets:
         cata = [int(t) for t in targets][:catapult_target_limit(origin)]
 
-    secs = travel_seconds(origin.x, origin.y, tx, ty,
-                          origin.tribe, units, origin.server_speed)
+    # Vitesse : l'armée (min des unités) ; si seul le héros voyage, sa propre vitesse.
+    if sum(units) > 0:
+        secs = travel_seconds(origin.x, origin.y, tx, ty,
+                              origin.tribe, units, origin.server_speed)
+    else:
+        hspeed = H.effective(hero)["speed"] if hero is not None else 1.0
+        secs = distance(origin.x, origin.y, tx, ty) / hspeed * 3600.0 / origin.server_speed
     arrive_at = now + secs
     mid = store.insert_movement(origin_id, target_id, player_id, kind, "outbound",
                                 units, arrive_at, target_x=tx, target_y=ty,
@@ -598,8 +612,22 @@ def _process_due_locked(now: float) -> int:
             for i in range(10):
                 target.troops[i] += units[i]
             store.save_village(target)
+            # Héros en assistance : il se **réinstalle** dans le village renforcé
+            # (nouveau rattachement → il y défend et y produit désormais).
+            rehomed = False
+            if m["hero"]:
+                from app.engine import hero as H
+                h = H.load(m["owner_id"])
+                if h is not None and h.status == "moving":
+                    h.home_village_id = target.id
+                    h.status = "home"
+                    h.busy_until = 0.0
+                    h.updated_at = now
+                    H.save(h)
+                    rehomed = True
             store.add_report(target.player_id, now, f"➕ Renfort à {target.name}",
-                             {"type": "reinforce", "de": origin.name, "unites": units})
+                             {"type": "reinforce", "de": origin.name, "unites": units,
+                              "hero": rehomed})
             store.delete_movement(m["id"])
             continue
 
