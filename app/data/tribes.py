@@ -9,10 +9,14 @@ class Tribe(IntEnum):
     TEUTONS = 1
     GAULS = 2
     NATURE = 3  # animaux sauvages des oasis (non jouable, défense uniquement)
+    NATARS = 4  # tribu PNJ des villages Natars (non jouable, défense uniquement)
 
 
-# Tribus jouables par un humain (exclut la Nature).
+# Tribus jouables par un humain (exclut Nature et Natars, qui sont des PNJ).
 PLAYABLE_TRIBES = (Tribe.ROMANS, Tribe.TEUTONS, Tribe.GAULS)
+
+# Tribus PNJ contrôlées par le moteur (jamais conquérables, non jouables).
+NPC_TRIBES = (Tribe.NATURE, Tribe.NATARS)
 
 
 TRIBE_NAMES_FR = {
@@ -20,6 +24,7 @@ TRIBE_NAMES_FR = {
     Tribe.TEUTONS: "Teutons",
     Tribe.GAULS: "Gaulois",
     Tribe.NATURE: "Nature",
+    Tribe.NATARS: "Natars",
 }
 
 

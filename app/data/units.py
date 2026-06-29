@@ -90,9 +90,34 @@ NATURE = [
     Unit("Éléphant",      600, 440, 520,  25, (0, 0, 0, 0), 5, 0,  0, True, 0, -1),
 ]
 
+# Tribu Natars (PNJ des villages Natars de l'endgame). Comme la Nature, ces unités
+# ne sont **pas entraînables** (producer = -1, pas de coût/recherche) : elles ne
+# servent qu'à garnisonner les villages Natars en défense (et, plus tard, à attaquer
+# les villages-Merveille). Kirilloid est **muet sur leurs stats de combat** (son
+# modèle t4 n'a que 3 tribus jouables + Nature ; l'`extend` t4 n'ajoute aux Natars
+# que temps/coût d'entraînement, inutiles ici). Stats (att, déf inf/cav, vitesse)
+# recoupées sur le **wiki Fandom** (API MediaWiki, infoboxes des unités) :
+#   https://travian.fandom.com/wiki/Natars (+ pages par unité : Pikeman, Guardsman, …)
+# Les valeurs absentes du wiki (Éléphant de guerre, vitesses, Baliste/Empereur/Colon
+# natarien) sont des **approximations documentées** au statut « table officielle des
+# animaux » de la Nature. Ordre identique à Travian (= ordre de `troops[10]`).
+NATARS = [
+    Unit("Piquier",              20,  35,  50,  6, (0, 0, 0, 0), 1, 0,    0, True,  0, -1),
+    Unit("Guerrier épineux",     65,  20,  10,  6, (0, 0, 0, 0), 1, 0,   50, True,  0, -1),
+    Unit("Garde",               100,  90,  75,  7, (0, 0, 0, 0), 1, 0,   50, True,  0, -1),
+    Unit("Rapace",                0,  10,   0, 25, (0, 0, 0, 0), 1, 0,    0, True,  0, -1, is_scout=True),
+    Unit("Cavalier à hache",    155,  80,  50, 14, (0, 0, 0, 0), 2, 0,   80, False, 0, -1),
+    Unit("Chevalier natarien",  170, 140,  80, 14, (0, 0, 0, 0), 3, 0,   80, False, 0, -1),
+    Unit("Éléphant de guerre",  250, 120, 150, 10, (0, 0, 0, 0), 6, 0,   80, True,  0, -1),
+    Unit("Baliste",              60,  45,  10,  3, (0, 0, 0, 0), 6, 0,    0, True,  0, -1, is_catapult=True),
+    Unit("Empereur natarien",    80,  50,  50,  4, (0, 0, 0, 0), 5, 0,    0, True,  0, -1, is_chief=True),
+    Unit("Colon natarien",       30,  40,  60,  5, (0, 0, 0, 0), 1, 0, 3000, True,  0, -1, is_settler=True),
+]
+
 UNITS: dict[Tribe, list[Unit]] = {
     Tribe.ROMANS: ROMANS,
     Tribe.TEUTONS: TEUTONS,
     Tribe.GAULS: GAULS,
     Tribe.NATURE: NATURE,
+    Tribe.NATARS: NATARS,
 }

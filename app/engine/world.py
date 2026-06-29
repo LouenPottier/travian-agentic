@@ -19,7 +19,11 @@ from app.data.tribes import Tribe
 from app.data.units import UNITS
 
 WORLD_SEED = 42
-WORLD_RADIUS = 20          # carte (2·R+1)² cases, centrée sur (0, 0)
+# Carte (2·R+1)² cases, centrée sur (0, 0). Agrandie « façon Travian » (grand carré
+# centré, Natars vers le milieu) : R=100 ⇒ 201×201 ≈ 40 k cases. Le terrain est
+# déterministe (seed + (x,y)) donc agrandir le rayon n'altère aucune case existante
+# (cf. seed_world : ré-insertion idempotente via INSERT OR IGNORE, pas de wipe).
+WORLD_RADIUS = 100
 # Densité d'oasis. Travian ne publie pas son ratio exact, mais ses cartes sont
 # nettement plus riches en oasis que notre 0.14 initial ; ~0.30 colle à l'aspect
 # « beaucoup d'oasis » du vrai jeu (cf. CLAUDE.md, approximation tunée).

@@ -271,9 +271,40 @@ Par ordre de rentabilité recommandé :
 3. ⬜ **Alliances** : ambassade = « à venir » (`web/index.html`). Création/adhésion, diplomatie
    (confédération/guerre/NAP) et surtout les **bonus d'alliance T4.6** (philosophie, métallurgie,
    recrutement, commerce…). Réf. TravianZ `Alliance.php`. Dépend d'avoir plusieurs joueurs.
-4. ⬜ **Endgame Natars** : **artefacts** (mi-partie, butin sur villages Natars, bonus
-   uniques/petits/grands — `effects.py` réserve déjà les emplacements de trésor) et **Merveille du
-   Monde** (fin de partie). Réf. TravianZ `Artifacts.php`. Lourd.
+4. 🟡 **Endgame Natars** — **socle fait**, artefacts & Merveille à venir :
+   - ✅ **Villages Natars + carte agrandie** (`app/engine/natars.py`, tribu `Tribe.NATARS`
+     + 10 unités dans `app/data/units.py`, verrouillé par `tests/test_natars.py`) :
+     6ᵉ tribu **PNJ** (`NPC_TRIBES`, non jouable, non entraînable — `producer=-1` comme
+     la Nature). Carte portée à **`WORLD_RADIUS=100`** (201×201, Natars vers le centre),
+     agrandie **sans wiper `game.db`** (`seed_world` ré-insère idempotemment via
+     `INSERT OR IGNORE` + terrain déterministe ; migration douce `_ensure_natars` pour
+     les mondes existants). `spawn_natar_villages` place 16 villages PNJ sur vallées
+     libres de l'anneau central (`NATAR_ZONE_INNER..OUTER`), garnison `troops[10]`
+     **d'autant plus forte qu'on est proche du centre** (`garrison_for`). Attaquables et
+     **pillables** (combat/butin normaux, le défenseur lit déjà `UNITS[target.tribe]`)
+     mais **NON conquérables** (garde-fou `conquest.conquer_eligible` sur `NPC_TRIBES`).
+     UI : marqueur 🏯 (classe `.vnatar`) sur la carte, `is_natar` exposé par `/api/map`
+     et `/api/tile`. **Placement du joueur** : la capitale humaine démarre désormais
+     **loin du centre** (`HUMAN_START`, ~rayon 60, hors zone Natar) avec un **2ᵉ village
+     proche** ; `_relocate_human_start` (dans `seed_world`) migre les mondes existants
+     (capitale encore au centre → déplacée loin, données conservées ; voisin rapproché). ⚠️ **Kirilloid muet** sur villages/garnisons → tailles de garnison =
+     **approximation documentée** (calibrée « plus fort au centre », support.travian.com
+     « Strongest Natars defenses ») ; **stats de combat des unités Natars** recoupées sur
+     le **wiki Fandom** (API MediaWiki, infoboxes — cf. en-tête `units.py`), valeurs
+     absentes (Éléphant de guerre, vitesses, Baliste/Empereur/Colon) = approximations
+     documentées au même titre que les animaux de la Nature.
+   - ⬜ **Artefacts** (mi-partie) : détenus par des villages Natars dédiés, **capturés par
+     le héros** (Trésorerie **vide** niv **10** = petit / **20** = grand·unique, finie à
+     l'impact ; `effects.py` réserve déjà l'effet « emplacements de trésor »). 8 types × 3
+     tailles (petit = village, grand/unique = compte ; max 3 actifs/compte dont 1 compte).
+     Bonus à brancher comme héros/brasserie (vitesse troupes, durabilité bâtiments — lien
+     `place.dur_bonus` déjà câblé —, conso céréales, cachette…). Table `artifacts`, verrou
+     `tests/test_artifacts.py`. Réf. support.travian.com / unofficialtravian (kirilloid muet).
+   - ⬜ **Merveille du Monde** (endgame, **lourd**) : plans de construction lâchés par des
+     villages Natars spéciaux (capture héros), bâtiment **Merveille** (`WORLD_WONDER`, id 39
+     déjà défini) à monter **niv 1→100** = condition de victoire ; vagues d'attaques Natars
+     contre les villages-Merveille (mouvement PNJ périodique). Réf. TravianZ `Artifacts.php`
+     / endgame. Verrou `tests/test_wonder.py`.
 5. 🟡 **Annexes** (TravianZ `GameEngine/`) — **farm list faite**, le reste à venir :
    - ✅ **Farm list (razzias groupées)** (`app/engine/farmlist.py`, table `farm_targets`, verrouillé
      par `tests/test_farmlist.py`) : chaque village (sa place de rassemblement) tient une liste de

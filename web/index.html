@@ -56,6 +56,7 @@
   .mcell.oasis  { background:#2e6b4a; }
   .mcell.vmine  { background:#7a5a2a; }
   .mcell.venemy { background:#7a2a2a; }
+  .mcell.vnatar { background:#3a3a3a; outline:1px solid #888; }
 </style>
 </head>
 <body>
@@ -787,9 +788,9 @@ function renderMap(d){
       const t=byXY[x+","+y];
       if(!t){ h+=`<div class="mcell" style="opacity:.25;background:#222">·</div>`; continue; }
       let cls="mcell", main="", sub="";
-      if(t.kind==="village"){ cls+=t.village.is_own?" vmine":" venemy";
-        main=t.village.is_own?"★":(t.village.is_capital?"🏰":"🏠");
-        sub=t.village.name.slice(0,6);
+      if(t.kind==="village"){ cls+=t.village.is_own?" vmine":(t.village.is_natar?" vnatar":" venemy");
+        main=t.village.is_own?"★":(t.village.is_natar?"🏯":(t.village.is_capital?"🏰":"🏠"));
+        sub=t.village.is_natar?"Natars":t.village.name.slice(0,6);
       } else if(t.kind==="oasis"){ cls+=" oasis";
         main=`<span style="font-size:13px">${t.oasis.emoji||"🌿"}</span>`;
         if(t.oasis.animals>0) sub="🐾"+t.oasis.animals;

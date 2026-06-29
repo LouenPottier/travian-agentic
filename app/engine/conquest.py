@@ -91,6 +91,11 @@ def conquer_eligible(target: V.Village, attacker_player_id: int,
                      now: float) -> tuple[bool, str]:
     """La cible peut-elle être conquise par cet attaquant (hors survie du chef, gérée
     par l'appelant après combat) ? Renvoie (ok, raison_si_non)."""
+    # Villages PNJ (Nature/Natars) : jamais conquérables (fidélité — on ne « chiefe »
+    # pas un village Natar ordinaire ; cf. CLAUDE.md, support.travian.com).
+    from app.data.tribes import NPC_TRIBES
+    if target.tribe in NPC_TRIBES:
+        return False, "village PNJ (non conquérable)"
     if V.admin_building_level(target) > 0:
         return False, "bâtiment d'administration encore debout"
     if target.is_capital:
