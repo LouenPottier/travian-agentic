@@ -505,6 +505,26 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
         H.apply_combat(def_hero, def_losses, att_killed, now)
         H.save(def_hero)
 
+    # Conquête : le héros du défenseur rattaché au village conquis **meurt**
+    # (fidélité — support.travian.com / unofficialtravian « Conquering Villages » : un
+    # héros dont le village d'attache est conquis meurt ; on ne le sauve qu'en le
+    # re-rattachant *avant*, cf. renfort héros). On le re-rattache à un village survivant
+    # du défenseur pour qu'il puisse y ressusciter (manoir requis). Géré ici — et non
+    # dans conquer_village — pour ne pas entrer en conflit avec H.save(def_hero) ci-dessus.
+    hero_def_lost = False
+    if conquest is not None:
+        dh = def_hero if def_hero is not None else H.load(def_owner)
+        if dh is not None and dh.home_village_id == target.id:
+            new_home = CQ.pick_surviving_home(def_owner, target.id)
+            if new_home is not None:
+                dh.home_village_id = new_home
+                dh.status = "dead"
+                dh.health = 0.0
+                dh.busy_until = 0.0
+                dh.updated_at = now
+                H.save(dh)
+                hero_def_lost = True
+
     # Artefact : si la cible (village Natar) en détient un, le héros peut le capturer
     # en remportant l'attaque (garnison vaincue) et avec une trésorerie vide suffisante
     # au village d'origine. Cf. engine.artifacts.try_capture.
@@ -529,8 +549,8 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
         "type": "defensive", "attaquant": origin.name, "kind": kind,
         "def_avant": def_before, "def_apres": target.troops, "captures": trapped,
         "pertes_pct": round(def_losses * 100), "butin_pille": loot,
-        "hero_def": def_hero is not None, "siege": siege,
-        "loyaute": loyalty_event, "conquete": conquis})
+        "hero_def": def_hero is not None, "hero_def_perdu": hero_def_lost,
+        "siege": siege, "loyaute": loyalty_event, "conquete": conquis})
     return survivors, loot, hero_alive, conquis
 
 

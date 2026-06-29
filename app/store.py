@@ -357,6 +357,15 @@ def delete_trade_route(route_id: int, origin_id: int) -> int:
         return cur.rowcount
 
 
+def delete_trade_routes_by_origin(origin_id: int) -> int:
+    """Supprime toutes les routes commerciales partant d'un village (utilisé à la
+    conquête : sinon elles deviennent des zombies retentées en boucle pour l'ancien
+    propriétaire, cf. movement._process_trade_routes_locked)."""
+    with connect() as c:
+        return c.execute("DELETE FROM trade_routes WHERE origin_id=?",
+                         (origin_id,)).rowcount
+
+
 # --- Liste de fermes (farm list) --------------------------------------------
 def insert_farm_target(origin_id, owner_id, target_id, target_x, target_y,
                        units, label="") -> int:
@@ -381,6 +390,14 @@ def delete_farm_target(target_id: int, origin_id: int) -> int:
         cur = c.execute("DELETE FROM farm_targets WHERE id=? AND origin_id=?",
                         (target_id, origin_id))
         return cur.rowcount
+
+
+def delete_farm_targets_by_origin(origin_id: int) -> int:
+    """Supprime toute la liste de fermes d'un village (utilisé à la conquête :
+    le nouveau propriétaire ne doit pas hériter des cibles de l'ancien)."""
+    with connect() as c:
+        return c.execute("DELETE FROM farm_targets WHERE origin_id=?",
+                         (origin_id,)).rowcount
 
 
 def add_report(player_id: int, created_at: float, title: str, body: dict) -> None:
