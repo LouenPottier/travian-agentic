@@ -164,6 +164,61 @@ def test_reconquer_enemy_oasis():
     print("✅ re-conquête : B vole l'oasis (1|0) à A (A notifié)")
 
 
+def test_oasis_garrison_defends_and_blocks_reconquest():
+    """Garnison d'oasis : on renforce une oasis qu'on occupe ; sa garnison la défend
+    et doit être détruite (attaque normale) pour la reprendre. Une razzia ne prend
+    jamais l'oasis ; renforcer une oasis qu'on n'occupe pas est refusé."""
+    from app.engine import movement as M
+    store.DB_PATH = Path(tempfile.mkdtemp()) / "oasis_garrison.db"
+    store.init_db()
+    store.insert_tiles([{"x": 1, "y": 0, "kind": "oasis",
+                         "layout": "wood25", "animals": CLEARED}])
+    now = time.time()
+    pa = store.create_player("A", Tribe.GAULS)   # occupe l'oasis
+    pb = store.create_player("B", Tribe.GAULS)   # attaquant
+    a = V.new_village("A1", Tribe.GAULS, server_speed=100, x=0, y=0, player_id=pa)
+    a.slots[21] = V.Slot(B.HERO_MANSION, 10); a.resources = [50000.0] * 4
+    a.troops[0] = 100                            # phalanges à poster en garnison
+    a = store.insert_village(a)
+    b = V.new_village("B1", Tribe.GAULS, server_speed=100, x=2, y=0, player_id=pb)
+    b.slots[21] = V.Slot(B.HERO_MANSION, 10); b.resources = [50000.0] * 4
+    b.troops[1] = 60                             # 60 épéistes offensifs
+    b = store.insert_village(b)
+
+    OAS.occupy(a.id, 1, 0, pa, now)
+
+    # B ne peut PAS renforcer une oasis qu'il n'occupe pas.
+    try:
+        M.send(b.id, None, pb, "reinforce", [0, 5] + [0] * 8, now, target_x=1, target_y=0)
+        assert False, "renfort d'oasis non occupée aurait dû échouer"
+    except M.MoveError as e:
+        print("refus attendu (oasis non occupée) :", e)
+
+    # A poste 100 phalanges en garnison sur son oasis.
+    info = M.send(a.id, None, pa, "reinforce", [100] + [0] * 9, now, target_x=1, target_y=0)
+    M.process_due(now + info["arrive_in"] + 1)
+    g = OAS.oasis_garrison(store.load_village(a.id), 1, 0)
+    assert g[0] == 100, ("garnison non postée", g)
+
+    # Razzia de B : combat la garnison mais ne prend JAMAIS l'oasis.
+    t1 = now + info["arrive_in"] + 2
+    inf_raid = M.send(b.id, None, pb, "raid", [0, 30] + [0] * 8, t1, target_x=1, target_y=0)
+    M.process_due(t1 + inf_raid["arrive_in"] + 1)
+    assert store.get_tile(1, 0)["owner_id"] == a.id, "razzia ne doit pas prendre l'oasis"
+    g_after_raid = OAS.oasis_garrison(store.load_village(a.id), 1, 0)
+    assert sum(g_after_raid) < 100, ("la garnison aurait dû subir des pertes", g_after_raid)
+    print(f"✅ razzia : garnison 100 → {sum(g_after_raid)} phalanges, oasis non prise")
+
+    # Attaque massive de B : détruit la garnison restante ⇒ reprend l'oasis.
+    bb = store.load_village(b.id); bb.troops[1] = 400; store.save_village(bb)
+    t2 = t1 + inf_raid["arrive_in"] + 2
+    inf_atk = M.send(b.id, None, pb, "attack", [0, 400] + [0] * 8, t2, target_x=1, target_y=0)
+    M.process_due(t2 + inf_atk["arrive_in"] + 1)
+    assert store.get_tile(1, 0)["owner_id"] == b.id, "attaque victorieuse doit prendre l'oasis"
+    assert store.load_village(a.id).oases == [], "A perd l'oasis"
+    print("✅ attaque : garnison détruite ⇒ B reprend l'oasis à A")
+
+
 def main():
     test_slots_scale_with_mansion()
     test_occupy_credits_production()

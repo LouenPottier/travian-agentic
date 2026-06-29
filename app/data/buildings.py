@@ -134,8 +134,11 @@ _BUILDINGS = [
 
     _b(id=B.SMITHY, name="Forge", cost=(180, 250, 500, 160), k=1.28, u=4, cp=2,
        _time=F.make_time(3875), benefit=F.mb_like, reqs={B.MAIN_BUILDING: 3, B.ACADEMY: 1}),
+    # benefit = +20 %/niveau de vitesse des troupes au-delà de 20 cases (vrai T4.6 ;
+    # cf. movement._leg_seconds). Kirilloid n'expose pas la valeur → recoupée
+    # support.travian.com / unofficialtravian (niv 20 = +400 % ⇒ ×5 la vitesse de base).
     _b(id=B.ARENA, name="Place de tournoi", cost=(1750, 2250, 1530, 240), k=1.28, u=1, cp=1,
-       _time=F.make_time(5375), benefit=F.p10, reqs={B.RALLY_POINT: 15}),
+       _time=F.make_time(5375), benefit=F.percent(20), reqs={B.RALLY_POINT: 15}),
     _b(id=B.MAIN_BUILDING, name="Bâtiment principal", cost=(70, 40, 60, 20), k=1.28, u=2, cp=2,
        _time=F.make_time(3875), benefit=F.mb_like),
     _b(id=B.RALLY_POINT, name="Place de rassemblement", cost=(110, 160, 90, 70), k=1.28, u=1, cp=1,

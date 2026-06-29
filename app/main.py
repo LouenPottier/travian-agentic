@@ -27,6 +27,8 @@ from app.engine import hero as HERO
 from app.engine import expansion as EXP
 from app.engine import oasis as OAS
 from app.engine import celebration as CEL
+from app.engine import brewery as BRW
+from app.engine import farmlist as FARM
 from app.engine import capital as CAP
 from app.data import items as IT
 
@@ -236,6 +238,11 @@ def serialize(v: V.Village) -> dict:
                        "remaining": round(v.celebration["ends_at"] - now),
                        "cp": v.celebration["cp"]}
 
+    # Brasserie (Teutons, capitale) : fête de la bière en cours + bonus d'attaque.
+    brewery = None
+    if V.building_levels(v).get(B.BREWERY, 0) > 0:
+        brewery = BRW.brewery_status(v, now)
+
     # Place de marché : niveau, marchands (total / libres), capacité par marchand.
     market = None
     if M.merchants_total(v) > 0:
@@ -259,7 +266,7 @@ def serialize(v: V.Village) -> dict:
         "queue_len": len(v.queue), "max_queue": v.max_queue, "slots": slots,
         "troops": troops, "training": training, "military": military,
         "movements": moves, "market": market, "hero_here": hero_here, "siege": siege,
-        "celebration": celebration,
+        "celebration": celebration, "brewery": brewery,
         "oases": [{"x": o["x"], "y": o["y"], "label": W.oasis_label(o["code"]),
                    "emoji": W.oasis_emoji(o["code"])} for o in v.oases],
         "oasis_slots": {"used": len(v.oases), "max": OAS.max_oases(v)},
@@ -349,8 +356,12 @@ def tile_detail(x: int, y: int):
         if t.get("owner_id") is not None:
             ov = store.load_village(t["owner_id"])
             if ov is not None:
-                owner = {"id": ov.id, "name": ov.name,
-                         "is_own": ov.player_id == HUMAN_PLAYER_ID}
+                is_own = ov.player_id == HUMAN_PLAYER_ID
+                owner = {"id": ov.id, "name": ov.name, "is_own": is_own}
+                if is_own:  # garnison postée (visible seulement au propriétaire)
+                    g = OAS.oasis_garrison(ov, x, y)
+                    owner["garrison"] = [{"name": UNITS[ov.tribe][i].name, "count": g[i]}
+                                         for i in range(10) if g[i] > 0]
         out["oasis"] = {
             "label": W.oasis_label(t["layout"]),
             "emoji": W.oasis_emoji(t["layout"]),
@@ -517,6 +528,27 @@ def start_celebration(village_id: int, ctype: int):
     return {"ok": True, "village": serialize(store.load_village(village_id))}
 
 
+@app.get("/api/village/{village_id}/brewery")
+def brewery_state(village_id: int):
+    """Brasserie (Teutons) : niveau, fête de la bière en cours, bonus d'attaque."""
+    v = _get(village_id)
+    if V.building_levels(v).get(B.BREWERY, 0) < 1:
+        raise HTTPException(status_code=400, detail="Pas de brasserie dans ce village.")
+    return BRW.brewery_status(v, time.time())
+
+
+@app.post("/api/village/{village_id}/brewery/festival")
+def start_brewery_festival(village_id: int):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        BRW.start_festival(village_id, HUMAN_PLAYER_ID, time.time())
+    except BRW.BreweryError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "village": serialize(store.load_village(village_id))}
+
+
 def _prisoner_view(p: dict) -> dict:
     """Vue lisible d'un groupe de prisonniers (noms d'unités + village d'origine)."""
     units = UNITS[p["tribe"]]
@@ -679,6 +711,61 @@ def delete_trade_route(village_id: int, route_id: int):
         raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
     store.delete_trade_route(route_id, v.id)
     return {"ok": True, "village": serialize(v)}
+
+
+# --- Liste de fermes (farm list) : razzias groupées -------------------------
+class FarmTarget(BaseModel):
+    units: list[int]
+    target_id: int | None = None       # cible village
+    target_x: int | None = None        # cible oasis (coordonnées)
+    target_y: int | None = None
+
+
+@app.get("/api/village/{village_id}/farmlist")
+def farmlist(village_id: int):
+    """Cibles de la liste de fermes de ce village (+ faisabilité immédiate)."""
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    return {"targets": FARM.list_targets(v.id, HUMAN_PLAYER_ID)}
+
+
+@app.post("/api/village/{village_id}/farmlist")
+def add_farm_target(village_id: int, body: FarmTarget):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    units = (body.units + [0] * 10)[:10]
+    try:
+        FARM.add_target(v.id, HUMAN_PLAYER_ID, units, body.target_id,
+                        body.target_x, body.target_y)
+    except FARM.FarmError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "targets": FARM.list_targets(v.id, HUMAN_PLAYER_ID)}
+
+
+@app.delete("/api/village/{village_id}/farmlist/{target_id}")
+def remove_farm_target(village_id: int, target_id: int):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        FARM.remove_target(target_id, v.id, HUMAN_PLAYER_ID)
+    except FARM.FarmError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "targets": FARM.list_targets(v.id, HUMAN_PLAYER_ID)}
+
+
+@app.post("/api/village/{village_id}/farmlist/raid")
+def raid_farmlist(village_id: int):
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        res = FARM.raid_all(v.id, HUMAN_PLAYER_ID, time.time())
+    except FARM.FarmError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "result": res, "village": serialize(_get(village_id))}
 
 
 # --- Héros, aventures, objets ------------------------------------------------

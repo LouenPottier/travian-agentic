@@ -78,6 +78,39 @@ def _check_occupiable(v: V.Village, tile: dict, x: int, y: int) -> None:
                          "(améliore le manoir du héros : niv 10/15/20).")
 
 
+# --- Garnison d'une oasis occupée -------------------------------------------
+# Vrai T4.6 (recoupé support.travian.com / wiki, kirilloid muet) : on peut **renforcer
+# une oasis qu'on occupe** ; ces troupes la **défendent** (sans bonus mur/résidence) et
+# doivent être **détruites** pour la reprendre (attaque normale). La garnison vit sur
+# l'entrée `Village.oases` du village d'attache : `{"x","y","code","garrison":[10]}`
+# (unités de la tribu du propriétaire). ⚠️ **Simplification documentée** : la garnison
+# d'oasis ne **consomme pas** de céréales (le vrai jeu la nourrit au village d'attache ;
+# le modèle ne suit pas les contingents par origine, comme pour les renforts de village).
+
+
+def _oasis_entry(v: V.Village, x: int, y: int) -> dict | None:
+    for o in v.oases:
+        if o["x"] == x and o["y"] == y:
+            return o
+    return None
+
+
+def oasis_garrison(v: V.Village, x: int, y: int) -> list[int]:
+    o = _oasis_entry(v, x, y)
+    return list(o.get("garrison", [0] * 10)) if o else [0] * 10
+
+
+def set_oasis_garrison(v: V.Village, x: int, y: int, garrison: list[int]) -> None:
+    """Fixe la garnison d'une oasis occupée (retirée si vide)."""
+    o = _oasis_entry(v, x, y)
+    if o is None:
+        return
+    if any(garrison):
+        o["garrison"] = list(garrison)
+    else:
+        o.pop("garrison", None)
+
+
 def occupy(village_id: int, x: int, y: int, player_id: int, now: float | None = None) -> dict:
     """Annexe l'oasis (x, y) au village `village_id`. Lève `OasisError` sinon."""
     v = store.load_village(village_id)
@@ -99,14 +132,21 @@ def abandon(village_id: int, x: int, y: int, player_id: int, now: float | None =
     v = store.load_village(village_id)
     if v is None or v.player_id != player_id:
         raise OasisError("Village invalide.")
-    if not any(o["x"] == x and o["y"] == y for o in v.oases):
+    entry = _oasis_entry(v, x, y)
+    if entry is None:
         raise OasisError("Cette oasis n'est pas occupée par ce village.")
 
     V.tick(v, now)
+    # La garnison éventuelle rejoint instantanément le village d'attache (approximation :
+    # le vrai jeu la fait rentrer au rassemblement ; on évite de perdre des troupes).
+    garrison = entry.get("garrison", [0] * 10)
+    for i in range(10):
+        v.troops[i] += garrison[i]
     v.oases = [o for o in v.oases if not (o["x"] == x and o["y"] == y)]
     store.save_village(v)
     store.set_tile_owner(x, y, None)
-    return {"x": x, "y": y, "free_slots": free_slots(v)}
+    return {"x": x, "y": y, "free_slots": free_slots(v),
+            "garrison_returned": list(garrison)}
 
 
 def best_eligible_village(player_id: int, x: int, y: int,

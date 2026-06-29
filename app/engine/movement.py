@@ -30,9 +30,36 @@ def army_speed(tribe, units: list[int]) -> float:
     return min(speeds) if speeds else 1.0
 
 
-def travel_seconds(ax, ay, bx, by, tribe, units, server_speed) -> float:
-    d = distance(ax, ay, bx, by)
-    return d / army_speed(tribe, units) * 3600.0 / server_speed
+# Place de tournoi (vrai T4.6, support.travian.com / unofficialtravian) : les
+# **20 premières cases** sont parcourues à vitesse normale ; au-delà, la vitesse est
+# augmentée de +20 %/niveau (cf. buildings ARENA.benefit). Le bonus est celui du
+# village **d'origine** de l'armée (ses troupes), aller comme retour.
+TOURNAMENT_FREE_FIELDS = 20
+
+
+def arena_level(v) -> int:
+    return V.building_levels(v).get(B.ARENA, 0)
+
+
+def _arena_multiplier(level: int) -> float:
+    return 1.0 + BLD.get(B.ARENA).benefit(level) / 100.0 if level > 0 else 1.0
+
+
+def _leg_seconds(d: float, speed: float, server_speed, arena: int = 0) -> float:
+    """Temps de trajet (s) pour `d` cases à `speed` cases/h, ÷ vitesse serveur, avec
+    le bonus de la place de tournoi (niveau `arena`) au-delà des 20 premières cases."""
+    mult = _arena_multiplier(arena)
+    if d <= TOURNAMENT_FREE_FIELDS or mult <= 1.0:
+        hours = d / speed
+    else:
+        hours = (TOURNAMENT_FREE_FIELDS / speed
+                 + (d - TOURNAMENT_FREE_FIELDS) / (speed * mult))
+    return hours * 3600.0 / server_speed
+
+
+def travel_seconds(ax, ay, bx, by, tribe, units, server_speed, arena: int = 0) -> float:
+    return _leg_seconds(distance(ax, ay, bx, by), army_speed(tribe, units),
+                        server_speed, arena)
 
 
 class MoveError(Exception):
@@ -206,7 +233,12 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
         if tile is None or tile["kind"] != "oasis":
             raise MoveError("Cible invalide : seules les oasis sont attaquables sur la carte.")
         if kind == "reinforce":
-            raise MoveError("On ne peut pas renforcer une oasis.")
+            # Renfort d'oasis : autorisé **uniquement** vers une oasis que tu occupes
+            # (vrai T4.6). La garnison la défendra (cf. _resolve_oasis).
+            owner_vid = tile.get("owner_id")
+            owner = store.load_village(owner_vid) if owner_vid is not None else None
+            if owner is None or owner.player_id != player_id:
+                raise MoveError("Tu ne peux renforcer qu'une oasis que tu occupes.")
         if (target_x, target_y) == (origin.x, origin.y):
             raise MoveError("Cible identique à l'origine.")
         tx, ty = target_x, target_y
@@ -254,12 +286,15 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
         cata = [int(t) for t in targets][:catapult_target_limit(origin)]
 
     # Vitesse : l'armée (min des unités) ; si seul le héros voyage, sa propre vitesse.
+    # Place de tournoi du village d'origine : bonus de vitesse au-delà de 20 cases.
+    arena = arena_level(origin)
     if sum(units) > 0:
         secs = travel_seconds(origin.x, origin.y, tx, ty,
-                              origin.tribe, units, origin.server_speed)
+                              origin.tribe, units, origin.server_speed, arena)
     else:
         hspeed = H.effective(hero)["speed"] if hero is not None else 1.0
-        secs = distance(origin.x, origin.y, tx, ty) / hspeed * 3600.0 / origin.server_speed
+        secs = _leg_seconds(distance(origin.x, origin.y, tx, ty), hspeed,
+                            origin.server_speed, arena)
     arrive_at = now + secs
     mid = store.insert_movement(origin_id, target_id, player_id, kind, "outbound",
                                 units, arrive_at, target_x=tx, target_y=ty,
@@ -273,8 +308,15 @@ def _build_place(target: V.Village) -> C.Place:
         b = BLD.get(s.building_id)
         if b.slot == "wall" and s.level > 0:
             wall_level, wall_bonus = s.level, b.benefit
+    # Tailleur de pierre (capitale) : durabilité des bâtiments +10 %/niveau ⇒ les
+    # engins de siège (catapultes vs bâtiments, béliers vs muraille) sont d'autant
+    # moins efficaces (combat.demolish_points/_wall divisent par la durabilité).
+    # Kirilloid muet sur la valeur → +10 %/niveau (vrai T4, support.travian.com).
+    stonemason = V.building_levels(target).get(B.STONEMASON, 0)
+    dur = 1.0 + 0.10 * stonemason
     return C.Place(tribe=int(target.tribe), pop=V.population(target),
-                   wall_level=wall_level, wall_bonus=wall_bonus)
+                   wall_level=wall_level, wall_bonus=wall_bonus,
+                   dur_bonus=dur, wall_durability=dur)
 
 
 def _wall_slot(target: V.Village) -> int | None:
@@ -344,6 +386,11 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
         if att_hero is not None:
             off.hero_power = H.combat_power(att_hero)
             off.bonus = H.effective(att_hero)["off_bonus"]
+        # Brasserie teutonne : fête de la bière active ⇒ +1 %/niveau d'attaque pour
+        # toutes les troupes du compte (s'ajoute au bonus d'attaque du héros).
+        if origin.tribe == Tribe.TEUTONS:
+            from app.engine import brewery as BR
+            off.bonus += BR.attack_bonus(origin.player_id, now)
         deff = C.Defender(units=UNITS[target.tribe], numbers=list(target.troops),
                           upgrades=list(target.upgrades))
         place = _build_place(target)
@@ -471,39 +518,65 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
 
 
 def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
-    """Combat à l'arrivée sur une oasis : troupes du joueur vs animaux (Nature).
+    """Combat à l'arrivée sur une oasis.
 
-    Pas de butin (les oasis ne stockent aucune ressource) ; on réduit la garnison
-    d'animaux survivants. Place.pop = pop de l'attaquant pour neutraliser le bonus
-    de moral (pas d'avantage « gros village » face aux animaux). Renvoie
+    - **Oasis libre** : troupes du joueur vs **animaux** (Nature), sans butin.
+    - **Oasis occupée par un autre joueur** : troupes vs la **garnison** du propriétaire
+      (sa tribu, sans bonus mur/résidence ; vrai T4.6). La reprendre exige de **détruire
+      la garnison** par une **attaque normale** (pas razzia) ; les survivants la volent
+      alors au profit d'un village éligible (`oasis.conquer`).
+
+    Place.pop = pop de l'attaquant pour neutraliser le bonus de moral. Renvoie
     (survivants offensifs, hero_alive)."""
     from app.engine import hero as H
-    animals = tile["animals"] or [0] * 10
+    from app.engine import oasis as O
+    owner_vid = tile.get("owner_id")
+    owner = store.load_village(owner_vid) if owner_vid is not None else None
+    occupied = owner is not None and owner.player_id != origin.player_id
+
     off = C.Off(units=UNITS[origin.tribe], numbers=list(units),
                 upgrades=list(origin.upgrades), pop=V.population(origin), kind=kind)
     if att_hero is not None:
         off.hero_power = H.combat_power(att_hero)
         off.bonus = H.effective(att_hero)["off_bonus"]
-    deff = C.Defender(units=UNITS[Tribe.NATURE], numbers=list(animals), upgrades=[0] * 10)
-    place = C.Place(tribe=int(Tribe.NATURE), pop=off.pop, wall_level=0)
-    res = C.combat(place, off, [deff])
+    if origin.tribe == Tribe.TEUTONS:
+        from app.engine import brewery as BR
+        off.bonus += BR.attack_bonus(origin.player_id, now)
 
+    if occupied:
+        V.tick(owner, now)
+        garrison = O.oasis_garrison(owner, tile["x"], tile["y"])
+        deff = C.Defender(units=UNITS[owner.tribe], numbers=list(garrison),
+                          upgrades=list(owner.upgrades))
+        place = C.Place(tribe=int(owner.tribe), pop=off.pop, wall_level=0)
+        defender_before = garrison
+    else:
+        animals = tile["animals"] or [0] * 10
+        deff = C.Defender(units=UNITS[Tribe.NATURE], numbers=list(animals), upgrades=[0] * 10)
+        place = C.Place(tribe=int(Tribe.NATURE), pop=off.pop, wall_level=0)
+        defender_before = animals
+
+    res = C.combat(place, off, [deff])
     survivors = [round(units[i] * (1 - res.off_losses)) for i in range(10)]
-    animals_after = [round(animals[i] * (1 - res.def_losses)) for i in range(10)]
-    store.update_tile_animals(tile["x"], tile["y"], animals_after)
+    defender_after = [round(defender_before[i] * (1 - res.def_losses)) for i in range(10)]
+    if occupied:
+        O.set_oasis_garrison(owner, tile["x"], tile["y"], defender_after)
+        store.save_village(owner)
+    else:
+        store.update_tile_animals(tile["x"], tile["y"], defender_after)
 
     hero_alive = True
     if att_hero is not None:
-        killed = sum(animals[i] - animals_after[i] for i in range(10))
+        killed = sum(defender_before[i] - defender_after[i] for i in range(10))
         hero_alive = not H.apply_combat(att_hero, res.off_losses, killed, now)
         H.save(att_hero)
 
-    # Re-conquête : oasis tenue par un autre joueur, nettoyée, attaque victorieuse
-    # (des troupes survivent) ⇒ on la lui vole au profit d'un village éligible.
+    # Re-conquête : oasis tenue par un autre joueur, **garnison détruite**, **attaque
+    # normale** victorieuse (des troupes survivent) ⇒ on la lui vole (village éligible).
+    # Une **razzia** ne prend jamais l'oasis (fidélité Travian / TravianZ).
     conquest = None
-    if (tile.get("owner_id") is not None and sum(animals_after) == 0
+    if (occupied and kind == "attack" and sum(defender_after) == 0
             and sum(survivors) > 0):
-        from app.engine import oasis as O
         conquest = O.conquer(tile, origin, now)
 
     label = W.oasis_label(tile["layout"])
@@ -511,11 +584,14 @@ def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
                      f"🐾 Attaque d'oasis ({tile['x']}|{tile['y']})", {
                          "type": "oasis", "oasis": label, "kind": kind,
                          "coords": [tile["x"], tile["y"]],
+                         "occupee": occupied,
                          "envoyees": list(units), "survivantes": survivors,
                          "pertes_pct": round(res.off_losses * 100),
-                         "animaux_avant": W.animal_breakdown(animals),
-                         "animaux_apres": W.animal_breakdown(animals_after),
-                         "cleared": sum(animals_after) == 0,
+                         "animaux_avant": W.animal_breakdown([0] * 10 if occupied else defender_before),
+                         "animaux_apres": W.animal_breakdown([0] * 10 if occupied else defender_after),
+                         "garnison_avant": sum(defender_before) if occupied else 0,
+                         "garnison_apres": sum(defender_after) if occupied else 0,
+                         "cleared": sum(defender_after) == 0,
                          "conquete": conquest,
                          "hero": att_hero is not None, "hero_alive": hero_alive})
     return survivors, hero_alive
@@ -601,6 +677,41 @@ def _process_due_locked(now: float) -> int:
             store.delete_movement(m["id"])
             continue
 
+        if m["kind"] == "reinforce" and m["target_id"] is None:
+            # Renfort d'une **oasis** occupée : les troupes rejoignent sa garnison
+            # (défense de l'oasis). Si l'oasis a été perdue entre-temps, elles rentrent.
+            from app.engine import oasis as O
+            tile = store.get_tile(m["target_x"], m["target_y"])
+            owner_vid = tile.get("owner_id") if tile else None
+            owner = store.load_village(owner_vid) if owner_vid is not None else None
+            if owner is not None and owner.player_id == m["owner_id"]:
+                # Les troupes quittent les effectifs en vol de l'origine pour la garnison.
+                V.tick(origin, now)
+                for i in range(10):
+                    origin.away[i] = max(0, origin.away[i] - units[i])
+                store.save_village(origin)
+                V.tick(owner, now)
+                g = O.oasis_garrison(owner, m["target_x"], m["target_y"])
+                for i in range(10):
+                    g[i] += units[i]
+                O.set_oasis_garrison(owner, m["target_x"], m["target_y"], g)
+                store.save_village(owner)
+                store.add_report(m["owner_id"], now,
+                                 f"➕ Renfort d'oasis ({m['target_x']}|{m['target_y']})",
+                                 {"type": "reinforce_oasis", "de": origin.name,
+                                  "unites": units, "coords": [m["target_x"], m["target_y"]]})
+            else:
+                # Oasis perdue : demi-tour vers l'origine (troupes laissées « en vol »,
+                # la phase « back » les réintégrera à la garnison de l'origine).
+                secs = travel_seconds(m["target_x"], m["target_y"], origin.x, origin.y,
+                                      origin.tribe, units, origin.server_speed,
+                                      arena_level(origin))
+                store.insert_movement(m["origin_id"], None, m["owner_id"],
+                                      "reinforce", "back", units, now + secs,
+                                      target_x=m["target_x"], target_y=m["target_y"])
+            store.delete_movement(m["id"])
+            continue
+
         if m["kind"] == "reinforce":
             # Les renforts cessent de consommer chez l'origine et passent à la
             # charge de la cible où ils stationnent désormais.
@@ -664,7 +775,8 @@ def _process_due_locked(now: float) -> int:
             # Seul le héros rentre (s'il survit) ; les troupes restent en garnison.
             if hero_back:
                 secs = travel_seconds(m["target_x"], m["target_y"], origin.x, origin.y,
-                                      origin.tribe, units, origin.server_speed)
+                                      origin.tribe, units, origin.server_speed,
+                                      arena_level(origin))
                 store.insert_movement(m["origin_id"], m["target_id"], m["owner_id"],
                                       m["kind"], "back", [0] * 10, now + secs,
                                       target_x=m["target_x"], target_y=m["target_y"],
@@ -674,7 +786,8 @@ def _process_due_locked(now: float) -> int:
             # Si seul le héros survit, le trajet retour suit sa propre vitesse.
             ret_units = survivors if sum(survivors) > 0 else units
             secs = travel_seconds(m["target_x"], m["target_y"], origin.x, origin.y,
-                                  origin.tribe, ret_units, origin.server_speed)
+                                  origin.tribe, ret_units, origin.server_speed,
+                                  arena_level(origin))
             store.insert_movement(m["origin_id"], m["target_id"], m["owner_id"],
                                   m["kind"], "back", survivors, now + secs, loot,
                                   target_x=m["target_x"], target_y=m["target_y"],

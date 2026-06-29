@@ -116,6 +116,10 @@ class Village:
     # {"type": 1|2, "ends_at": float, "cp": int}. Les points de culture sont crédités
     # paresseusement à la fin (récolte par celebration.harvest_completed).
     celebration: dict | None = None
+    # Fête de la bière en cours à la brasserie (Teutons, capitale ; cf. engine.brewery) :
+    # None ou {"ends_at": float}. Tant qu'elle est active, +1 %/niveau de brasserie à
+    # l'attaque de toutes les troupes du compte (account-wide).
+    brewery_festival: dict | None = None
 
 
 # Emplacements : 1..18 champs de ressources, 19..38 centre du village,
@@ -186,6 +190,33 @@ def gross_production(v: Village) -> list[float]:
     return prod
 
 
+# --- Abreuvoir (Romains) -----------------------------------------------------
+# Vrai T4.6 (kirilloid muet ; recoupé support.travian.com « Reducing crop consumption
+# & Horse Drinking Trough » / unofficialtravian) : l'abreuvoir réduit de **−1 céréale/h**
+# l'entretien de chaque cavalier romain au passage de paliers (Equites Legati niv 10,
+# Imperatoris niv 15, Caesaris niv 20) et accélère l'entraînement de la cavalerie de
+# **−1 %/niveau**. Effets locaux au village qui possède l'abreuvoir.
+HORSE_POOL_CROP_THRESHOLDS = {3: 10, 4: 15, 5: 20}  # index unité romaine → niv requis
+
+
+def unit_upkeep(v: Village, unit_index: int) -> int:
+    """Entretien (céréales/h) d'une unité dans `v`, abreuvoir romain déduit (min 1)."""
+    base = UNITS[v.tribe][unit_index].upkeep
+    if v.tribe == Tribe.ROMANS:
+        need = HORSE_POOL_CROP_THRESHOLDS.get(unit_index)
+        if need is not None and building_levels(v).get(B.HORSE_POOL, 0) >= need:
+            return max(1, base - 1)
+    return base
+
+
+def horse_pool_train_factor(v: Village) -> float:
+    """Facteur multiplicatif de réduction du temps d'entraînement de la cavalerie
+    (abreuvoir romain) : −1 %/niveau. 1,0 hors Romains / sans abreuvoir."""
+    if v.tribe != Tribe.ROMANS:
+        return 1.0
+    return 1.0 - 0.01 * building_levels(v).get(B.HORSE_POOL, 0)
+
+
 def troop_upkeep(v: Village) -> int:
     """Consommation de céréales : troupes stationnées + troupes en déplacement.
 
@@ -194,8 +225,7 @@ def troop_upkeep(v: Village) -> int:
     Les renforts qui ont atteint leur cible sont stationnés (`troops`) dans la
     cible et y consomment donc le blé : on ne les compte plus ici.
     """
-    units = UNITS[v.tribe]
-    return sum((v.troops[i] + v.away[i]) * units[i].upkeep for i in range(len(v.troops)))
+    return sum((v.troops[i] + v.away[i]) * unit_upkeep(v, i) for i in range(len(v.troops)))
 
 
 def net_production(v: Village) -> list[float]:
@@ -206,18 +236,23 @@ def net_production(v: Village) -> list[float]:
 
 
 # --- Capacité de stockage ----------------------------------------------------
-def _storage(v: Village, building_id: int) -> int:
-    caps = [BLD.get(building_id).benefit(s.level)
-            for s in v.slots.values() if s.building_id == building_id and s.level > 0]
+def _storage(v: Village, *building_ids: int) -> int:
+    """Capacité totale de stockage : somme de tous les entrepôts/greniers du type
+    demandé. Le **grand entrepôt** (GREAT_WAREHOUSE) et le **grand grenier**
+    (GREAT_GRANARY), hors capitale, s'additionnent à l'entrepôt/grenier ordinaire
+    (chacun avec sa propre capacité = 3× l'ordinaire, cf. F.great_capacity)."""
+    caps = [BLD.get(s.building_id).benefit(s.level)
+            for s in v.slots.values()
+            if s.building_id in building_ids and s.level > 0]
     return sum(caps) if caps else BASE_STORAGE
 
 
 def warehouse_capacity(v: Village) -> int:
-    return _storage(v, B.WAREHOUSE)
+    return _storage(v, B.WAREHOUSE, B.GREAT_WAREHOUSE)
 
 
 def granary_capacity(v: Village) -> int:
-    return _storage(v, B.GRANARY)
+    return _storage(v, B.GRANARY, B.GREAT_GRANARY)
 
 
 def capacities(v: Village) -> list[int]:
@@ -593,6 +628,8 @@ def enqueue_training(v: Village, building_id: int, unit_index: int, count: int,
         v.resources[i] -= cost[i]
 
     per_unit = unit.train_time * train_time_factor(building_id, level) / v.server_speed
+    if not unit.infantry:  # abreuvoir romain : −1 %/niveau sur la cavalerie
+        per_unit *= horse_pool_train_factor(v)
     free = _building_free_at(v, building_id, now)
     order = TrainOrder(building_id=building_id, unit_index=unit_index,
                        remaining=count, per_unit=per_unit, next_finish=free + per_unit)

@@ -173,15 +173,11 @@ Phase 3 en cours (livrée incrémentalement) :
   détenteur (notifié) et la rattache à un village éligible de l'attaquant (`best_eligible_village`,
   préférence à l'origine ; sinon oasis seulement libérée). UI : récap dans le rapport + indice dans
   la modale de case. L'occupation *pacifique* (`occupy`) reste réservée aux oasis libres.
-  ⚠️ **SIMPLIFICATION ACTUELLE INFIDÈLE — garnison d'oasis non modélisée** : `movement.send`
-  interdit *tout* renfort d'oasis (« On ne peut pas renforcer une oasis. ») et
-  `_resolve_oasis`/`oasis.conquer` ne font qu'un combat **troupes-vs-animaux** ⇒ une oasis occupée
-  par un joueur se reprend en battant des *animaux*, alors qu'elle devrait être défendue par la
-  **garnison** de son propriétaire. Le vrai T4.6 (cf. support.travian.com / wiki) : oasis **libre**
-  = animaux seulement, pas de garnison ; oasis **occupée par toi** = tu **peux** y stationner des
-  renforts (nourris par le village d'attache, rapatriables au rassemblement, **sans** bonus
-  mur/résidence) ; **reprendre** une oasis ennemie = **attaque normale** (pas razzia) qui **détruit
-  la garnison** stationnée. → à corriger (cf. trous Phase 3).
+  ✅ **Garnison d'oasis** (cf. item #7 ci-dessous, verrouillé) : on peut **renforcer une oasis qu'on
+  occupe** (garnison stockée sur `Village.oases`, défend dans `_resolve_oasis` sans bonus
+  mur/résidence) ; une oasis **libre** n'a que des animaux ; **reprendre** une oasis ennemie =
+  **attaque normale** (jamais razzia) qui doit **détruire la garnison**. `abandon` rapatrie la
+  garnison. ⚠️ Simplification documentée : la garnison d'oasis ne consomme pas de céréales.
 - ✅ **Siège câblé** (`movement.py`, verrouillé par `tests/test_buildings.test_siege_wiring`) :
   le calcul existait déjà dans `combat.py` (`result.wall` béliers, `result.buildings` catapultes) ;
   il est maintenant **câblé**. `send(..., targets=[ids de bâtiments])` conserve les cibles de
@@ -278,33 +274,56 @@ Par ordre de rentabilité recommandé :
 4. ⬜ **Endgame Natars** : **artefacts** (mi-partie, butin sur villages Natars, bonus
    uniques/petits/grands — `effects.py` réserve déjà les emplacements de trésor) et **Merveille du
    Monde** (fin de partie). Réf. TravianZ `Artifacts.php`. Lourd.
-5. ⬜ **Annexes** (TravianZ `GameEngine/`) : **farm list** (razzias groupées T4), **messagerie
-   joueur-à-joueur** (`Message.php` ; on a les rapports, pas les MP), **classements/statistiques**
-   (`Ranking.php`), NPC trader / bourse du marché (à décider si dans le périmètre), médailles,
-   protection débutant.
-6. ⬜ **Bâtiments spéciaux constructibles mais INERTES** (effet décoratif seulement) : tous ont
-   leur table `buildings.py` + un descriptif `effects.py`, mais **aucun effet câblé dans le moteur**
-   (`grep B.X` ⇒ 0 usage hors `data`/`effects`). Plusieurs **cassent la fidélité de systèmes déjà
-   implémentés** ⇒ corrections de fidélité bon marché, pas du contenu « endgame » :
-   - **Arène** (place de tournoi, id 13) : bonus de vitesse des troupes **au-delà de 20 cases**.
-     `movement.army_speed` = simple min des vitesses, aucun bonus ⇒ **fausse les durées de trajet déjà codées**.
-   - **Tailleur de pierre** (id 33) : durabilité des bâtiments ↑ vs catapultes ⇒ **impacte le siège déjà câblé**.
-   - **Grand entrepôt / grand grenier** (id 37/38) : `village.warehouse_capacity`/`granary_capacity`
-     ne comptent **que** `WAREHOUSE`/`GRANARY` ⇒ ces deux bâtiments **n'ajoutent rien au stockage**.
-   - **Brasserie** (Teuton, id 34) : bonus d'attaque + débloque la **grande célébration** (à traiter
-     avec l'item 2). « brew » n'est qu'un *commentaire* dans `combat.py:12`, rien ne l'alimente.
-   - **Abreuvoir** (Romain, id 40) : coût/entretien cavalerie ↓ + vitesse cavalerie ↑. Inerte.
-   ⚠️ Chiffres à recouper kirilloid (modèle `t4`) ; mécanique/cas limites TravianZ `GameEngine/`.
-7. ⬜ **Garnison d'oasis (renfort + défense + reprise)** — corrige une simplification infidèle de
-   l'occupation d'oasis déjà livrée (cf. puce « Occupation d'oasis »). Vrai T4.6 (recoupé
-   support.travian.com / wiki) : on **peut renforcer une oasis qu'on occupe** (troupes nourries par
-   le village d'attache, rapatriables au rassemblement, **sans** bonus mur/résidence) ; une oasis
-   **libre** n'a que des animaux ; **reprendre** une oasis ennemie = **attaque normale** (pas razzia)
-   qui doit **détruire la garnison** du propriétaire (pas juste les animaux). À faire : lever
-   l'interdit `movement.send` pour `kind="reinforce"` vers une oasis **occupée par l'envoyeur** ;
-   stocker la garnison (sur le `tile` / `Village.oases`) ; faire défendre cette garnison dans
-   `_resolve_oasis` quand l'oasis est occupée (animaux seulement si libre) ; conditionner
-   `oasis.conquer` à la destruction de la garnison. Verrouiller par un test.
+5. 🟡 **Annexes** (TravianZ `GameEngine/`) — **farm list faite**, le reste à venir :
+   - ✅ **Farm list (razzias groupées)** (`app/engine/farmlist.py`, table `farm_targets`, verrouillé
+     par `tests/test_farmlist.py`) : chaque village (sa place de rassemblement) tient une liste de
+     cibles de razzia (village ou oasis) avec un **modèle de troupes** ; « razzia groupée »
+     (`raid_all`) envoie un `raid` par cible et **saute** celles aux troupes insuffisantes (réutilise
+     `movement.send`, butin/combat inchangés ⇒ aucun nouveau chiffre de jeu). API
+     `/api/village/{id}/farmlist` (GET/POST/DELETE `{id}`) + `/farmlist/raid` (POST) ; UI : section
+     « 🚜 Liste de fermes » dans la modale du rassemblement (ajouter la cible+troupes saisies,
+     retirer, razzia groupée). ⚠️ Simplification : **une liste par village** (pas de listes nommées
+     multiples) ; cibles oasis ajoutables via l'API (l'UI rally ajoute les cibles village).
+   - ⬜ **Messagerie joueur-à-joueur** (`Message.php` ; on a les rapports, pas les MP).
+   - ⬜ **Classements/statistiques** (`Ranking.php`), NPC trader / bourse du marché (périmètre à
+     décider), médailles, protection débutant.
+6. ✅ **Bâtiments spéciaux jadis INERTES — câblés** (verrouillés par `tests/test_special_buildings.py`).
+   Chiffres recoupés **support.travian.com / unofficialtravian** (kirilloid muet) ; cf. commentaires
+   dans `buildings.py` / `movement.py` / `village.py` / `brewery.py` :
+   - **Arène** (place de tournoi, id 13) : `movement._leg_seconds` parcourt les **20 premières
+     cases** à vitesse normale puis applique **+20 %/niveau** au-delà (benefit `ARENA`=`percent(20)`,
+     niv 20 ⇒ ×5). Appliqué à l'aller **et** au retour (place de tournoi du village d'origine de
+     l'armée), pas aux marchands. `travel_seconds`/le trajet du héros prennent un arg `arena`.
+   - **Tailleur de pierre** (id 33, capitale) : `_build_place` fixe `place.dur_bonus`/`wall_durability`
+     = `1+0,10×niveau` ⇒ catapultes (bâtiments) et béliers (mur) d'autant moins efficaces (le moteur
+     `combat.demolish_points/_wall` divise par la durabilité — déjà prévu, jamais alimenté avant).
+   - **Grand entrepôt / grand grenier** (id 37/38) : `village._storage` somme désormais
+     `WAREHOUSE+GREAT_WAREHOUSE` (resp. `GRANARY+GREAT_GRANARY`), chacun = 3× la capacité ordinaire.
+   - **Abreuvoir** (Romain, id 40) : `village.unit_upkeep` retire **−1 céréale/h** par cavalier romain
+     aux paliers (Equites Legati niv 10, Imperatoris niv 15, Caesaris niv 20) ; `horse_pool_train_factor`
+     accélère l'entraînement de la cavalerie de **−1 %/niveau** (appliqué dans `enqueue_training`).
+   - **Brasserie** (Teuton, id 34, capitale, niv max 10) : `app/engine/brewery.py` — **fête de la
+     bière** (coût fixe 3870/1680/215/10900, durée 72 h ÷ vitesse serveur) ⇒ tant qu'active,
+     **+1 %/niveau d'attaque pour tout le compte** (`attack_bonus`, branché dans `movement._resolve_battle`
+     via `off.bonus`, s'ajoute au bonus du héros). État `Village.brewery_festival` (persisté). API
+     `/api/village/{id}/brewery` (GET) + `/brewery/festival` (POST) ; UI : panneau « Fête de la bière »
+     dans la modale de la brasserie ; `serialize` expose `brewery`. ⚠️ **Effets secondaires NON
+     modélisés** (approx. documentée) : catapultes teutonnes au hasard + persuasion des chefs ÷2.
+7. ✅ **Garnison d'oasis (renfort + défense + reprise)** — **fait** (verrouillé par
+   `tests/test_oasis.test_oasis_garrison_defends_and_blocks_reconquest`). `movement.send` autorise
+   désormais `kind="reinforce"` vers une **oasis occupée par l'envoyeur** (sinon refus « Tu ne peux
+   renforcer qu'une oasis que tu occupes »). La garnison vit sur l'entrée `Village.oases`
+   (`{"x","y","code","garrison":[10]}`, unités de la tribu du propriétaire ; helpers
+   `oasis.oasis_garrison`/`set_oasis_garrison`). `_resolve_oasis` défend avec **les animaux** si
+   l'oasis est libre, **la garnison du propriétaire** (sans bonus mur/résidence) si elle est occupée ;
+   **reprendre** une oasis ennemie exige de **détruire la garnison** par une **attaque normale**
+   (jamais razzia) — alors `oasis.conquer` la rattache à un village éligible. Renfort en vol vers une
+   oasis perdue entre-temps ⇒ demi-tour. `abandon` **rapatrie** la garnison au village d'attache.
+   API : `/api/tile` expose la garnison (au propriétaire seul) ; UI : la modale de case ouvre le
+   formulaire « Renfort (garnison) » sur ton oasis et « Attaque » sur une oasis ennemie nettoyée,
+   récap garnison + rapport `reinforce_oasis`. ⚠️ **Simplification documentée** (cf. `oasis.py`) :
+   la garnison d'oasis **ne consomme pas** de céréales (le vrai jeu la nourrit au village d'attache ;
+   le modèle ne suit pas les contingents par origine, comme les renforts de village).
 
 > Note : la **famine** est déjà faite (`village.py._starve` : grenier vide + prod de blé négative →
 > mort de troupes), ne pas la relister comme manquante.
