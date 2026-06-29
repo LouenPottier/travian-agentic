@@ -207,7 +207,15 @@ Phase 3 en cours (livrée incrémentalement) :
   du conquérant et **n'est plus capitale** ; les **survivants garnisonnent** (administrateurs
   retirés, ils disparaissent) ; **troupes du village conquis perdues** (`troops`+`away`+files,
   mouvements partants supprimés) ; **recherche/forge réinitialisées** ; **mur supprimé** ;
-  **bâtiments d'une autre tribu supprimés** ; **oasis annexées libérées** ; **loyauté → 25**.
+  **bâtiments d'une autre tribu supprimés** ; **oasis annexées libérées** ; **célébration en
+  cours annulée** ; **routes commerciales & liste de fermes partant d'ici purgées** (sinon
+  zombies retentées pour l'ancien proprio / héritées par le nouveau) ; **loyauté → 25**.
+  ✅ **Héros du défenseur rattaché à la cible** : il **meurt** à la conquête (fidélité,
+  support.travian.com / unofficialtravian « Conquering Villages ») et se **re-rattache à un
+  village survivant** (préférence capitale, `conquest.pick_surviving_home`) pour pouvoir y
+  ressusciter — géré dans `movement._resolve_battle` (après `H.save(def_hero)`, pour ne pas
+  écraser la sauvegarde du combat) ; rapport déf. « 💀 héros perdu ». Verrouillé par
+  `test_conquest.test_conquest_kills_homed_hero_and_purges_state`.
   ⚠️ **Kirilloid muet** → tous les chiffres viennent de la **doc officielle/wiki** (citée en
   tête de `conquest.py` : support.travian.com, unofficialtravian, travianlibrary). `RESET_LOYALTY`
   (=25) et la non-destruction des renforts stationnés ailleurs = **approximations documentées**.

@@ -1054,7 +1054,7 @@ async function loadReports(){
     const ly=fmtLoyalty(b);
     const af=fmtArtefact(b.artefact);
     if(b.type==="offensive") line=`pertes ${b.pertes_pct}% · butin 🪵${b.butin[0]} 🧱${b.butin[1]} ⛏️${b.butin[2]} 🌾${b.butin[3]}`+(caps?` · 🪤 ${caps} piégé(s)`:"")+(b.hero?` · 🦸 héros${b.hero_alive?"":" 💀"}`:"")+sg+ly+af;
-    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(caps?` · 🪤 ${caps} capturé(s)`:"")+(b.hero_def?" · 🦸 héros en défense":"")+sg+ly;
+    else if(b.type==="defensive") line=`pertes ${b.pertes_pct}% · pillé 🪵${b.butin_pille[0]} 🧱${b.butin_pille[1]} ⛏️${b.butin_pille[2]} 🌾${b.butin_pille[3]}`+(caps?` · 🪤 ${caps} capturé(s)`:"")+(b.hero_def?" · 🦸 héros en défense":"")+(b.hero_def_perdu?" · 💀 héros perdu (village d'attache conquis)":"")+sg+ly;
     else if(b.type==="oasis"){ const cq=b.conquete;
       const etat=b.occupee?(b.cleared?" · 🎉 garnison détruite":` · garnison restante (${b.garnison_apres})`)
                           :(b.cleared?" · 🎉 oasis nettoyée":" · animaux restants");

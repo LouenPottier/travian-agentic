@@ -115,6 +115,21 @@ def _is_old_tribe_building(building_id: int, new_tribe: Tribe) -> bool:
     return b.tribe is not None and b.tribe != new_tribe
 
 
+def pick_surviving_home(player_id: int, exclude_id: int) -> int | None:
+    """Choisit un village **survivant** d'un joueur pour y re-rattacher son héros
+    quand son village d'attache vient d'être conquis (préférence à la capitale).
+    Renvoie None si le joueur n'a plus aucun autre village (ne devrait pas arriver :
+    `conquer_eligible` interdit de conquérir l'unique village du défenseur)."""
+    others = [vid for vid in store.player_villages(player_id) if vid != exclude_id]
+    if not others:
+        return None
+    for vid in others:
+        v = store.load_village(vid)
+        if v is not None and v.is_capital:
+            return vid
+    return others[0]
+
+
 def conquer_village(target: V.Village, attacker_player_id: int, attacker_tribe: Tribe,
                     survivors: list[int], now: float) -> dict:
     """Applique le changement de propriétaire (loyauté tombée à 0). Modifie `target`
@@ -145,6 +160,11 @@ def conquer_village(target: V.Village, attacker_player_id: int, attacker_tribe: 
     # mouvements partant d'ici pour éviter des retours fantômes).
     store.delete_movements_by_origin(target.id)
 
+    # Routes commerciales & liste de fermes partant d'ici : purgées (sinon zombies
+    # retentées pour l'ancien propriétaire / héritées par le nouveau, cf. store).
+    store.delete_trade_routes_by_origin(target.id)
+    store.delete_farm_targets_by_origin(target.id)
+
     # Bâtiments : mur supprimé ; bâtiments de l'ancienne tribu supprimés si la tribu
     # change ; recherche/forge réinitialisées.
     target.slots.pop(V.WALL_SLOT, None)
@@ -167,6 +187,7 @@ def conquer_village(target: V.Village, attacker_player_id: int, attacker_tribe: 
     target.traps = 0
     target.trap_queue = []
     target.prisoners = []
+    target.celebration = None  # une fête de l'ancien proprio ne se poursuit pas
     target.loyalty = RESET_LOYALTY
     target.updated_at = now
 
