@@ -27,6 +27,7 @@ from app.engine import hero as HERO
 from app.engine import expansion as EXP
 from app.engine import oasis as OAS
 from app.engine import celebration as CEL
+from app.engine import capital as CAP
 from app.data import items as IT
 
 app = FastAPI(title="Travian local — T4.6")
@@ -118,9 +119,25 @@ def _slot_type(idx: int) -> str:
     return "village"
 
 
+def _account_has_palace(player_id: int, exclude_village_id: int | None = None) -> bool:
+    """True si le joueur possède un palais (niv ≥ 1) dans un autre village.
+
+    Sert à appliquer « un seul palais par compte » (vrai Travian)."""
+    if player_id is None:
+        return False
+    for vid in store.player_villages(player_id):
+        if vid == exclude_village_id:
+            continue
+        vv = store.load_village(vid)
+        if vv and V.building_levels(vv).get(B.PALACE, 0) >= 1:
+            return True
+    return False
+
+
 def serialize(v: V.Village) -> dict:
     V.tick(v)
     store.save_village(v)  # persiste l'état avancé (ressources, file)
+    account_has_palace = _account_has_palace(v.player_id, v.id)
     prod = V.net_production(v)
     caps = V.capacities(v)
     now = time.time()
@@ -130,22 +147,23 @@ def serialize(v: V.Village) -> dict:
         if s is not None:
             b = BLD.get(s.building_id)
             order = next((o for o in v.queue if o.slot_index == idx), None)
+            mx = V.effective_max_level(v, b)  # champs hors capitale plafonnés à 10
             slots.append({
                 "index": idx, "empty": False,
                 "building_id": s.building_id, "name": b.name,
-                "level": s.level, "max_level": b.max_level, "slot_type": b.slot,
-                "next_cost": b.cost_at(s.level + 1) if s.level < b.max_level else None,
-                "next_time": round(V.build_time(v, b, s.level + 1)) if s.level < b.max_level else None,
+                "level": s.level, "max_level": mx, "slot_type": b.slot,
+                "next_cost": b.cost_at(s.level + 1) if s.level < mx else None,
+                "next_time": round(V.build_time(v, b, s.level + 1)) if s.level < mx else None,
                 "finish_in": round(order.finish_at - now) if order else None,
                 "target_level": order.target_level if order else None,
                 "effect": EFF.building_effect(v, s.building_id, s.level),
                 "next_effect": (EFF.building_effect(v, s.building_id, s.level + 1)
-                                if s.level < b.max_level else None),
+                                if s.level < mx else None),
             })
         else:
             buildable = [{"id": b.id, "name": b.name, "cost": b.cost_at(1),
                           "time": round(V.build_time(v, b, 1))}
-                         for b in V.available_buildings(v, idx)]
+                         for b in V.available_buildings(v, idx, account_has_palace)]
             slots.append({"index": idx, "empty": True,
                           "slot_type": _slot_type(idx), "buildable": buildable})
 
@@ -230,6 +248,10 @@ def serialize(v: V.Village) -> dict:
         "id": v.id, "name": v.name, "tribe": TRIBE_NAMES_FR[v.tribe],
         "x": v.x, "y": v.y, "is_own": v.player_id == HUMAN_PLAYER_ID,
         "server_speed": v.server_speed,
+        "is_capital": v.is_capital,
+        # Palais niv ≥ 1 dans CE village ⇒ on peut le déclarer capitale (s'il ne l'est pas).
+        "can_make_capital": (not v.is_capital
+                             and V.building_levels(v).get(B.PALACE, 0) >= 1),
         "resources": [round(r) for r in v.resources], "capacities": caps,
         "production": [round(p, 1) for p in prod], "population": V.population(v),
         "troop_upkeep": V.troop_upkeep(v),
@@ -370,11 +392,28 @@ def construct(village_id: int, slot_index: int, building_id: int):
     if v.player_id != HUMAN_PLAYER_ID:
         raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
     try:
-        order = V.enqueue_new_building(v, slot_index, building_id)
+        order = V.enqueue_new_building(
+            v, slot_index, building_id,
+            account_has_palace=_account_has_palace(v.player_id, v.id))
     except V.BuildError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "finish_in": round(order.finish_at - time.time()),
             "village": serialize(v)}
+
+
+@app.post("/api/village/{village_id}/make-capital")
+def make_capital(village_id: int):
+    """Déclare ce village comme capitale (exige un palais niv ≥ 1)."""
+    now = time.time()
+    M.process_due(now)
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        info = CAP.make_capital(HUMAN_PLAYER_ID, village_id, now)
+    except CAP.CapitalError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "reduced": info["reduced"], "village": serialize(_get(village_id))}
 
 
 @app.post("/api/village/{village_id}/train/{building_id}/{unit_index}/{count}")

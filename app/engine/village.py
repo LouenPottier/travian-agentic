@@ -361,6 +361,20 @@ class BuildError(Exception):
     pass
 
 
+# Vrai Travian : seuls les champs de ressources de la **capitale** dépassent le
+# niveau 10 (jusqu'à leur max_level 20/21). Hors capitale, ils plafonnent à 10.
+# Cf. support.travian.com — « Capital Village » : « the capital village is the only
+# village where you can upgrade resource fields above level 10 ».
+FIELD_CAP_NON_CAPITAL = 10
+
+
+def effective_max_level(v: Village, building: Building) -> int:
+    """Niveau maximum atteignable de `building` dans `v` (cf. FIELD_CAP_NON_CAPITAL)."""
+    if building.slot == "res" and not v.is_capital:
+        return min(FIELD_CAP_NON_CAPITAL, building.max_level)
+    return building.max_level
+
+
 def enqueue_build(v: Village, slot_index: int, now: float | None = None) -> BuildOrder:
     """Met en file la montée d'un niveau de l'emplacement `slot_index`."""
     now = now or _time.time()
@@ -377,7 +391,9 @@ def enqueue_build(v: Village, slot_index: int, now: float | None = None) -> Buil
 
     building = BLD.get(slot.building_id)
     target = slot.level + 1
-    if target > building.max_level:
+    if target > effective_max_level(v, building):
+        if building.slot == "res" and not v.is_capital:
+            raise BuildError("Hors capitale, les champs sont limités au niveau 10.")
         raise BuildError("Niveau maximum atteint.")
 
     levels = building_levels(v)
@@ -399,8 +415,13 @@ def enqueue_build(v: Village, slot_index: int, now: float | None = None) -> Buil
 
 
 # --- Bâtiments constructibles sur un emplacement -----------------------------
-def available_buildings(v: Village, slot_index: int) -> list[Building]:
-    """Bâtiments qu'on peut poser sur l'emplacement `slot_index` (vide)."""
+def available_buildings(v: Village, slot_index: int,
+                        account_has_palace: bool = False) -> list[Building]:
+    """Bâtiments qu'on peut poser sur l'emplacement `slot_index` (vide).
+
+    `account_has_palace` : True si le joueur possède déjà un palais (dans n'importe
+    quel village) — le palais est alors masqué (vrai Travian : **un seul palais par
+    compte de jeu**, cf. support.travian.com)."""
     if slot_index in v.slots:
         return []
 
@@ -426,6 +447,12 @@ def available_buildings(v: Village, slot_index: int) -> list[Building]:
             continue
         if b.id in present and not b.multi:
             continue
+        # Palais ⇄ résidence : mutuellement exclusifs dans un même village (vrai
+        # Travian, support.travian.com). Et un seul palais sur tout le compte.
+        if b.id == B.PALACE and (B.RESIDENCE in present or account_has_palace):
+            continue
+        if b.id == B.RESIDENCE and B.PALACE in present:
+            continue
         if any(levels.get(bid, 0) < lvl for bid, lvl in b.reqs.items()):
             continue
         out.append(b)
@@ -433,13 +460,15 @@ def available_buildings(v: Village, slot_index: int) -> list[Building]:
 
 
 def enqueue_new_building(v: Village, slot_index: int, building_id: int,
-                         now: float | None = None) -> BuildOrder:
+                         now: float | None = None,
+                         account_has_palace: bool = False) -> BuildOrder:
     """Pose un nouveau bâtiment (niveau 0 → 1) sur un emplacement vide."""
     now = now or _time.time()
     tick(v, now)
     if slot_index in v.slots:
         raise BuildError("Emplacement déjà occupé.")
-    if building_id not in (b.id for b in available_buildings(v, slot_index)):
+    if building_id not in (b.id for b in available_buildings(v, slot_index,
+                                                             account_has_palace)):
         raise BuildError("Bâtiment non constructible ici.")
 
     v.slots[slot_index] = Slot(building_id=building_id, level=0)
