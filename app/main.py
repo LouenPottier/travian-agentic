@@ -83,23 +83,32 @@ HUMAN_START = (60, 60)
 def _relocate_human_start(player_id: int) -> None:
     """Migration douce des mondes créés avant la zone Natar centrale : si la capitale
     humaine est encore dans/au bord de la zone Natar (centre), on la **déplace loin**
-    (ses données développées suivent le déplacement), on lui adjoint un **2ᵉ village
-    proche** si elle n'en a pas, et on rapproche le voisin teuton (sinon « voisin » à
-    l'autre bout de la carte). Idempotent : ne re-déplace pas un village déjà éloigné."""
+    (ses données développées suivent le déplacement). Tout **village secondaire resté au
+    centre** est ensuite **regroupé près de la capitale** (et non laissé en zone Natar) ;
+    si le joueur n'a qu'un village, on lui en adjoint un proche. Le voisin teuton est
+    rapproché. Idempotent : ne re-déplace pas un village déjà éloigné du centre."""
     vids = store.player_villages(player_id)
     if not vids:
         return
     caps = [store.load_village(v) for v in vids]
     cap = next((c for c in caps if c.is_capital), caps[0])
     occupied = {(v["x"], v["y"]) for v in store.list_villages()}
-    if max(abs(cap.x), abs(cap.y)) <= NAT.NATAR_ZONE_OUTER:   # encore au centre
+    if max(abs(cap.x), abs(cap.y)) <= NAT.NATAR_ZONE_OUTER:   # capitale encore au centre
         occupied.discard((cap.x, cap.y))
         hx, hy = _find_free_valley(*HUMAN_START, occupied)
         store.move_village(cap.id, hx, hy)
         occupied.add((hx, hy))
     else:
         hx, hy = cap.x, cap.y
-    if len(vids) < 2:                                          # 2ᵉ village proche
+    # Villages secondaires encore au centre ⇒ les rapprocher de la capitale (pas du centre).
+    for sec in caps:
+        if sec.id == cap.id or max(abs(sec.x), abs(sec.y)) > NAT.NATAR_ZONE_OUTER:
+            continue
+        occupied.discard((sec.x, sec.y))
+        sx, sy = _find_free_valley(hx + 2, hy + 1, occupied)
+        store.move_village(sec.id, sx, sy)
+        occupied.add((sx, sy))
+    if len(vids) < 2:                                          # aucun 2ᵉ village ⇒ en créer un proche
         sx, sy = _find_free_valley(hx + 2, hy + 1, occupied)
         occupied.add((sx, sy))
         store.insert_village(V.new_village(
