@@ -163,12 +163,48 @@ def test_failed_settlement_frees_slot():
     print("✅ fondation échouée → slot libéré, colons en retour")
 
 
+def test_settler_training_needs_slot():
+    """Vrai Travian : un colon occupe un emplacement d'expansion **dès l'entraînement**
+    (support.travian.com / wiki « Expansion slots »). Résidence niv 10 = 1 slot = 3
+    colons formables ; au-delà (ou avec un emplacement déjà consommé), l'entraînement
+    est refusé — c'était le bug : on pouvait former des colons sans emplacement libre."""
+    pid, vid = setup()
+    now = time.time()
+    v = store.load_village(vid)
+    sidx = EXP.settler_index(Tribe.GAULS)
+    # 1 slot (résidence niv 10), aucun autre village → 3 colons formables.
+    assert EXP.settler_training_allowance(pid, current=v) == 3
+    # 2 colons déjà debout → il en reste 1 formable.
+    v.troops[sidx] = 2
+    store.save_village(v); v = store.load_village(vid)
+    assert EXP.settler_training_allowance(pid, current=v) == 1
+    # 3 colons → emplacement plein (le slot est occupé dès l'entraînement).
+    v.troops[sidx] = 3
+    store.save_village(v); v = store.load_village(vid)
+    assert EXP.settler_training_allowance(pid, current=v) == 0
+    # En former un de plus → refus (le garde-fou précède le débit du coût).
+    try:
+        V.enqueue_training(v, B.RESIDENCE, sidx, 1, now)
+        assert False, "former un colon sans emplacement libre aurait dû échouer"
+    except V.BuildError as e:
+        assert "emplacement" in str(e).lower(), e
+        print("✅ refus attendu (emplacement d'expansion plein) :", e)
+    # Les colons en **file d'entraînement** comptent aussi (pas seulement debout).
+    v.troops[sidx] = 0
+    v.training.append(V.TrainOrder(building_id=B.RESIDENCE, unit_index=sidx,
+                                   remaining=3, per_unit=1.0, next_finish=now + 1))
+    store.save_village(v); v = store.load_village(vid)
+    assert EXP.settler_training_allowance(pid, current=v) == 0
+    print("✅ colons en file comptent dans l'occupation des emplacements")
+
+
 def main():
     test_culture_accumulation()
     test_settle_flow()
     test_settle_refused_on_oasis()
     test_pending_settlement_reserves_slot()
     test_failed_settlement_frees_slot()
+    test_settler_training_needs_slot()
     print("\n✅ Expansion (culture / colons / fondation) validée")
 
 

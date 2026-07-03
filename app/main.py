@@ -578,10 +578,14 @@ def academy(village_id: int):
     items = []
     for i, u in V.researchable_units(v):
         in_queue = next((r for r in v.research_queue if r.unit_index == i), None)
+        missing = V.unmet_requirements(v, i)
         items.append({"index": i, "name": u.name, "researched": bool(v.research[i]),
                       "cost": list(V.research_cost(v, i)),
                       "time": round(V.research_time(v, i)),
-                      "in_queue": round(in_queue.finish_at - now) if in_queue else None})
+                      "in_queue": round(in_queue.finish_at - now) if in_queue else None,
+                      "locked": bool(missing),
+                      "requires": [{"building": BLD.get(b).name, "level": lvl}
+                                   for b, lvl in missing]})
     return {"level": level, "units": items}
 
 

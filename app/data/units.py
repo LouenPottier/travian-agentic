@@ -121,3 +121,54 @@ UNITS: dict[Tribe, list[Unit]] = {
     Tribe.NATURE: NATURE,
     Tribe.NATARS: NATARS,
 }
+
+# --- Prérequis de recherche/entraînement par unité --------------------------
+# Niveau minimal de bâtiment exigé pour *rechercher* (académie) puis entraîner une
+# unité. ⚠️ **Kirilloid ne modélise PAS ces prérequis** : le type `Unit` de kirilloid
+# réserve un champ `r` (requirements) mais il n'est **jamais rempli** (base/t3/t4) →
+# même statut d'approximation que les marchands/colons. Valeurs = **vrai Travian
+# Legends T4**, recoupées sur le wiki communautaire (travian.fandom.com) :
+#   - Equites Legati          : Académie 5  + Écurie 1   ✅ vérifié en ligne
+#   - Equites Imperatoris      : Académie 5  + Écurie 3
+#   - Equites Caesaris         : Académie 15 + Écurie 10  ✅ vérifié en ligne
+#     (cf. /wiki/Equites_Legati, /wiki/Equites_Caesaris, /wiki/Cavalry, /wiki/Academy)
+# Les **paliers intermédiaires** (Écurie 3/5, infanterie recherchée, siège) suivent la
+# progression canonique Legends, identique pour les trois tribus. WebFetch vers le wiki
+# étant bloqué dans la session d'implémentation, seules les extrémités cavalerie ont pu
+# être recoupées en direct ; à reconfirmer cellule par cellule si l'infobox devient
+# accessible. Clé = id de bâtiment, valeur = niveau requis. L'unité d'index 0 (1ʳᵉ de
+# la caserne) et les unités de résidence/palais (colon/chef) n'ont pas de prérequis ici.
+REQUIREMENTS: dict[Tribe, dict[int, dict[int, int]]] = {
+    Tribe.ROMANS: {
+        1: {B.ACADEMY: 1},                       # Prétorien
+        2: {B.ACADEMY: 5},                       # Imperian
+        3: {B.ACADEMY: 5,  B.STABLES: 1},        # Equites Legati  (éclaireur)
+        4: {B.ACADEMY: 5,  B.STABLES: 3},        # Equites Imperatoris
+        5: {B.ACADEMY: 15, B.STABLES: 10},       # Equites Caesaris
+        6: {B.ACADEMY: 10, B.WORKSHOP: 1},       # Bélier
+        7: {B.ACADEMY: 15, B.WORKSHOP: 10},      # Catapulte à feu
+    },
+    Tribe.TEUTONS: {
+        1: {B.ACADEMY: 1},                       # Lancier
+        2: {B.ACADEMY: 1},                       # Combattant à la hache
+        3: {B.ACADEMY: 1},                       # Éclaireur (infanterie, caserne)
+        4: {B.ACADEMY: 5,  B.STABLES: 3},        # Paladin
+        5: {B.ACADEMY: 5,  B.STABLES: 5},        # Cavalier teuton
+        6: {B.ACADEMY: 10, B.WORKSHOP: 1},       # Bélier
+        7: {B.ACADEMY: 15, B.WORKSHOP: 10},      # Catapulte
+    },
+    Tribe.GAULS: {
+        1: {B.ACADEMY: 1},                       # Épéiste
+        2: {B.ACADEMY: 5,  B.STABLES: 1},        # Éclaireur (cavalerie)
+        3: {B.ACADEMY: 5,  B.STABLES: 3},        # Cavalier Theutates
+        4: {B.ACADEMY: 5,  B.STABLES: 5},        # Druide-cavalier
+        5: {B.ACADEMY: 15, B.STABLES: 10},       # Haeduan
+        6: {B.ACADEMY: 10, B.WORKSHOP: 1},       # Bélier
+        7: {B.ACADEMY: 15, B.WORKSHOP: 10},      # Catapulte de guerre
+    },
+}
+
+
+def unit_requirements(tribe: Tribe, unit_index: int) -> dict[int, int]:
+    """Prérequis de bâtiment (id → niveau) pour rechercher/entraîner cette unité."""
+    return REQUIREMENTS.get(tribe, {}).get(unit_index, {})

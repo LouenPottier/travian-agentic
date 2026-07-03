@@ -140,6 +140,42 @@ def settler_index(tribe: Tribe) -> int:
     raise ExpansionError("Cette tribu n'a pas de colon.")
 
 
+# --- Gate d'entraînement des colons (emplacements d'expansion) ----------------
+# Vrai Travian (support.travian.com / travian.fandom.com, « Expansion slots ») : un
+# emplacement d'expansion permet de former **3 colons** (pour fonder) OU 1 administrateur
+# (pour conquérir), et le slot est **occupé dès le début de l'entraînement**, pas
+# seulement à la fondation. Donc on ne peut pas former de colons sans emplacement libre :
+# une résidence/palais niveau 10 avec un village déjà fondé n'en a plus.
+def settlers_in_progress(player_id: int, current: "V.Village | None" = None) -> int:
+    """Colons d'un joueur déjà **formés** (debout dans un village) ou **en file
+    d'entraînement**, pas encore envoyés fonder. (Les colons **en vol** vers une
+    fondation comptent à part, via `pending_settlements`.) `current` permet de passer
+    le village en cours de modification, dont l'état mémoire n'est pas encore persisté."""
+    from app.data.units import UNITS
+    total = 0
+    for vid in store.player_villages(player_id):
+        v = current if (current is not None and current.id == vid) else store.load_village(vid)
+        if v is None:
+            continue
+        idx = settler_index(v.tribe)
+        total += v.troops[idx]
+        total += sum(o.remaining for o in v.training
+                     if UNITS[v.tribe][o.unit_index].is_settler)
+    return total
+
+
+def settler_training_allowance(player_id: int, current: "V.Village | None" = None) -> int:
+    """Nombre de colons que le joueur peut **encore mettre en chantier**.
+
+    = (emplacements d'expansion non encore consommés par des villages fondés ou des
+    colons en vol) × 3, moins les colons déjà formés / en file d'entraînement."""
+    free_slots = (expansion_slots(player_id)
+                  - (len(store.player_villages(player_id)) - 1)
+                  - store.pending_settlements(player_id))
+    capacity = max(0, free_slots) * SETTLERS_NEEDED
+    return max(0, capacity - settlers_in_progress(player_id, current))
+
+
 def settled_village(name: str, tribe: Tribe, x: int, y: int, player_id: int,
                     server_speed: int, layout_code: str) -> V.Village:
     """Construit un nouveau village (non-capitale) sur une vallée de distribution

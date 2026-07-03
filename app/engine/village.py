@@ -15,7 +15,7 @@ from app.data import buildings as BLD
 from app.data import formulas as F
 from app.data.buildings import B, Building
 from app.data.tribes import Tribe
-from app.data.units import UNITS, Unit
+from app.data.units import UNITS, Unit, unit_requirements
 
 # Indices de ressources
 WOOD, CLAY, IRON, CROP = 0, 1, 2, 3
@@ -732,6 +732,18 @@ def enqueue_training(v: Village, building_id: int, unit_index: int, count: int,
             kind = "Le chef" if unit.is_chief else "Le colon"
             raise BuildError(f"{kind} requiert {BLD.get(building_id).name} "
                              f"niveau {EXPANSION_MIN_LEVEL}.")
+        if unit.is_settler:
+            # Un colon occupe un emplacement d'expansion dès l'entraînement (vrai
+            # Travian) : refus s'il n'en reste plus de libre (cf. expansion.py).
+            from app.engine import expansion as EXP
+            allowance = EXP.settler_training_allowance(v.player_id, current=v)
+            if allowance <= 0:
+                raise BuildError("Aucun emplacement d'expansion libre : forme un "
+                                 "colon seulement avec un emplacement disponible "
+                                 "(résidence niv 10/20, palais niv 10/15/20).")
+            if count > allowance:
+                raise BuildError(f"Emplacements d'expansion : {allowance} colon(s) "
+                                 f"au maximum (3 par emplacement libre).")
     elif unit.producer != base_producer(building_id):
         raise BuildError("Cette unité ne se forme pas ici.")
     if needs_research(v, unit_index) and not v.research[unit_index]:
@@ -772,6 +784,17 @@ def is_researched(v: Village, unit_index: int) -> bool:
     return not needs_research(v, unit_index) or bool(v.research[unit_index])
 
 
+def unmet_requirements(v: Village, unit_index: int) -> list[tuple[int, int]]:
+    """Prérequis de bâtiment non satisfaits pour cette unité : liste de (id, niveau)."""
+    levels = building_levels(v)
+    return [(bid, lvl) for bid, lvl in unit_requirements(v.tribe, unit_index).items()
+            if levels.get(bid, 0) < lvl]
+
+
+def reqs_met(v: Village, unit_index: int) -> bool:
+    return not unmet_requirements(v, unit_index)
+
+
 def research_cost(v: Village, unit_index: int) -> tuple:
     return tuple(UNITS[v.tribe][unit_index].cost)
 
@@ -782,14 +805,13 @@ def research_time(v: Village, unit_index: int) -> float:
 
 
 def researchable_units(v: Village) -> list[tuple[int, Unit]]:
-    """Unités recherchables : nécessitent une recherche et leur bâtiment producteur
-    est déjà construit (on ne recherche que ce qu'on pourra entraîner)."""
-    levels = building_levels(v)
-    out = []
-    for i, u in enumerate(UNITS[v.tribe]):
-        if needs_research(v, i) and levels.get(u.producer, 0) >= 1:
-            out.append((i, u))
-    return out
+    """Unités relevant de l'académie : toutes celles nécessitant une recherche.
+
+    On les liste **toutes** (y compris verrouillées par un prérequis non satisfait,
+    cf. `unmet_requirements`) pour que l'académie affiche leurs conditions de
+    déblocage, comme dans le vrai Travian ; `enqueue_research` refuse tant que les
+    prérequis (niveau d'académie + niveau du bâtiment producteur) ne sont pas atteints."""
+    return [(i, u) for i, u in enumerate(UNITS[v.tribe]) if needs_research(v, i)]
 
 
 def enqueue_research(v: Village, unit_index: int, now: float | None = None) -> ResearchOrder:
@@ -804,6 +826,10 @@ def enqueue_research(v: Village, unit_index: int, now: float | None = None) -> R
         raise BuildError("Recherche déjà effectuée ou en cours.")
     if building_levels(v).get(units[unit_index].producer, 0) < 1:
         raise BuildError("Bâtiment producteur de l'unité absent.")
+    # Prérequis de niveau (académie + bâtiment producteur), vrai Travian : la cavalerie
+    # avancée exige une écurie de plus en plus haute, etc. (cf. units.REQUIREMENTS).
+    for bid, lvl in unmet_requirements(v, unit_index):
+        raise BuildError(f"Prérequis manquant : {BLD.get(bid).name} niveau {lvl}.")
 
     cost = research_cost(v, unit_index)
     if any(v.resources[i] < cost[i] for i in range(4)):

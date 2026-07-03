@@ -58,6 +58,34 @@ def test_research_gating():
     print("✅ phalange (index 0) entraînable sans recherche")
 
 
+def test_research_requires_building_levels():
+    """Vrai Travian : la cavalerie avancée exige une écurie de plus en plus haute
+    (Gaulois : éclaireur écurie 1, Theutates écurie 3, Druide écurie 5, Haeduan
+    écurie 10 + académie 15). Avec une écurie niv 1 on ne doit PAS pouvoir tout
+    rechercher (régression signalée). Recoupé wiki travian.fandom.com."""
+    now = time.time()
+    v = _gaul(STABLES=1, ACADEMY=5)
+    # Éclaireur (index 2) : écurie 1 + académie 5 → OK.
+    assert V.reqs_met(v, 2)
+    V.enqueue_research(v, 2, now)
+    # Cavalier Theutates (index 3, écurie 3) et Haeduan (index 5, écurie 10) verrouillés.
+    for idx in (3, 5):
+        assert not V.reqs_met(v, idx)
+        try:
+            V.enqueue_research(v, idx, now)
+            assert False, f"recherche unité {idx} aurait dû échouer (écurie trop basse)"
+        except V.BuildError as e:
+            print(f"refus attendu (prérequis) unité {idx} :", e)
+    # L'académie liste bien toutes les unités à rechercher, verrouillées comprises.
+    listed = {i for i, _ in V.researchable_units(v)}
+    assert {2, 3, 5} <= listed
+    # Avec écurie 10 + académie 15, le Haeduan se débloque.
+    v2 = _gaul(STABLES=10, ACADEMY=15)
+    assert V.reqs_met(v2, 5)
+    V.enqueue_research(v2, 5, now)
+    print("✅ prérequis d'écurie/académie respectés par unité")
+
+
 def _raid_losses(upgrade_level):
     """Razzia identique d'un village vers un autre ; renvoie (% pertes off, def)."""
     store.DB_PATH = Path(tempfile.mkdtemp()) / f"smithy_{upgrade_level}.db"
