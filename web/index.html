@@ -478,6 +478,7 @@ async function loadAcademyPanel(P){
     h+=`<div class="bld"><div class="name">${u.name}</div>`;
     if(u.researched) h+=`<div class="cost" style="color:#7fe07f">✅ recherchée</div>`;
     else if(u.in_queue!=null) h+=`<div class="cost">⏳ ${fmtTimer(u.in_queue)}</div>`;
+    else if(u.locked) h+=`<div class="cost" style="color:#ff8080">🔒 ${u.requires.map(r=>`${r.building} niv ${r.level}`).join(", ")} requis</div>`;
     else h+=`<div class="cost">${fmtCost(u.cost)}</div><div class="cost">⏱️ ${u.time}s</div>
         <button onclick="research(${u.index})">Rechercher</button>`;
     h+=`</div>`;

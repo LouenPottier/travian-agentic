@@ -22,8 +22,17 @@ UI web jouable + API JSON pour des agents. Voir `README.md` pour le détail et l
 - **Coûts non modélisés par kirilloid → approximations documentées** (même statut que les
   marchands, cf. `tribes.py`) : recherche en **académie** = coût d'entraînement de l'unité
   (temps = `research_time` kirilloid) ; amélioration en **forge** = coût × niveau visé ;
-  **pièges** du trappeur = `village.TRAP_COST`/`TRAP_TIME`. Le niveau d'académie requis par
-  unité n'est pas modélisé (académie niv 1 suffit). À raffiner si une source fiable apparaît.
+  **pièges** du trappeur = `village.TRAP_COST`/`TRAP_TIME`. **Prérequis de recherche par unité**
+  (`units.REQUIREMENTS`, appliqués par `village.unmet_requirements`/`enqueue_research`, verrouillés
+  par `tests/test_buildings.test_research_requires_building_levels`) : chaque unité non-basique exige
+  un **niveau d'académie ET de bâtiment producteur** minimal (cavalerie avancée → écurie de plus en
+  plus haute : Legati/éclaireur écurie 1, tier 2 écurie 3, etc. jusqu'à écurie 10 + académie 15 pour
+  Caesaris/Haeduan ; siège : atelier 1 + académie 10, catapulte atelier 10 + académie 15). ⚠️
+  **Kirilloid muet** (champ `r` jamais rempli) → valeurs = **vrai Travian Legends T4** ; extrémités
+  cavalerie (écurie 1 / écurie 10) recoupées en direct sur `travian.fandom.com` (Equites Legati,
+  Equites Caesaris), paliers intermédiaires = progression canonique Legends (à reconfirmer cellule
+  par cellule si l'infobox wiki redevient fetchable). La **forge** ne gate que par le niveau de forge
+  (plafond d'amélioration), pas par ces prérequis — comportement laissé tel quel faute de source.
 - Le **combat** est validé contre les vecteurs de `t4/combat.spec.ts` (`tests/test_combat.py`) :
   ne pas régresser. Idem `tests/test_raid.py` pour le cycle d'attaque.
 
@@ -123,7 +132,12 @@ Phase 3 en cours (livrée incrémentalement) :
   **points de culture** cumulés par *joueur* (table `players.culture`/`culture_at`, accumulation
   paresseuse = somme des `culture_at` des bâtiments de tous ses villages, ×vitesse serveur),
   **emplacements d'expansion** (résidence `slots2` niv 10/20, palais `slots3` niv 10/15/20,
-  cumulés), **entraînement de colons** (résidence, unités `is_settler` déjà existantes),
+  cumulés), **entraînement de colons** (résidence, unités `is_settler` déjà existantes ;
+  **gardé par les emplacements d'expansion** : `expansion.settler_training_allowance` —
+  un colon **occupe un slot dès l'entraînement** (3 colons / slot, vrai Travian, cf.
+  support.travian.com / wiki « Expansion slots »), donc `enqueue_training` refuse de
+  former un colon sans slot libre, en comptant villages fondés + colons en vol +
+  colons déjà debout/en file ; verrouillé par `test_settler_training_needs_slot`),
   **envoi de 3 colons** sur une vallée libre (mouvement `kind="settle"`, `target_id` NULL) →
   fondation à l'arrivée (`found_on_arrival`, colons consommés, nouveau village non-capitale via
   `settled_village` qui réutilise `world.layout_fields`). ⚠️ **Kirilloid ne modélise PAS le
