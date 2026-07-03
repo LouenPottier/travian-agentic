@@ -550,7 +550,10 @@ def make_capital(village_id: int):
         info = CAP.make_capital(HUMAN_PLAYER_ID, village_id, now)
     except CAP.CapitalError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"ok": True, "reduced": info["reduced"], "village": serialize(_get(village_id))}
+    removed = info.get("removed_new_capital", []) + info.get("removed_old_capital", [])
+    return {"ok": True, "reduced": info["reduced"],
+            "removed": [BLD.get(bid).name for bid in removed],
+            "village": serialize(_get(village_id))}
 
 
 @app.post("/api/village/{village_id}/train/{building_id}/{unit_index}/{count}")

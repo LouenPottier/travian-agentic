@@ -48,6 +48,7 @@ def make_capital(player_id: int, village_id: int,
 
     # Rétrograde l'ancienne capitale (et ramène ses champs > 10 à 10).
     reduced: list[tuple[int, int]] = []
+    demoted_removed: list[int] = []
     for vid in store.player_villages(player_id):
         if vid == village_id:
             continue
@@ -57,12 +58,46 @@ def make_capital(player_id: int, village_id: int,
         V.tick(v, now)
         reduced = _cap_resource_fields(v)
         v.is_capital = False
+        # Ancienne capitale rétrogradée : ses bâtiments réservés à la capitale
+        # (tailleur de pierre, brasserie) deviennent illégaux → supprimés.
+        demoted_removed = _drop_incompatible(v, is_capital=False)
         store.save_village(v)
 
     V.tick(target, now)
     target.is_capital = True
+    # Nouvelle capitale : ses bâtiments interdits en capitale (grande caserne, grande
+    # écurie, grand entrepôt, grand grenier) sont supprimés.
+    promoted_removed = _drop_incompatible(target, is_capital=True)
     store.save_village(target)
-    return {"reduced": reduced}
+    return {"reduced": reduced, "removed_new_capital": promoted_removed,
+            "removed_old_capital": demoted_removed}
+
+
+def _drop_incompatible(v: V.Village, *, is_capital: bool) -> list[int]:
+    """Supprime de `v` les bâtiments incompatibles avec son nouveau statut de capitale
+    (et leurs ordres de construction en file). Renvoie les `building_id` retirés.
+
+    ⚠️ **Source** (support.travian.com « Capital Village ») : « If your new capital has
+    Great Barracks or Great Stable, those will be removed ». On généralise via les flags
+    `capital_only`/`non_capital` (mêmes invariants que `village.available_buildings`) :
+    - village **devenant** capitale ⇒ retire les bâtiments `non_capital` (grande caserne,
+      grande écurie, grand entrepôt, grand grenier) ;
+    - village **rétrogradé** ⇒ retire les bâtiments `capital_only` (tailleur de pierre,
+      brasserie ; la merveille n'a pas ce flag et n'est pas concernée).
+    Sans remboursement (fidèle, comme la baisse des champs > 10)."""
+    removed: list[int] = []
+    removed_slots: set[int] = set()
+    for si, s in list(v.slots.items()):
+        b = BLD.get(s.building_id)
+        if (is_capital and b.non_capital) or (not is_capital and b.capital_only):
+            removed.append(s.building_id)
+            removed_slots.add(si)
+            v.slots.pop(si, None)
+    if removed_slots:
+        v.queue = [o for o in v.queue if o.slot_index not in removed_slots]
+    if B.BREWERY in removed:        # brasserie retirée ⇒ fête de la bière interrompue
+        v.brewery_festival = None
+    return removed
 
 
 def _cap_resource_fields(v: V.Village) -> list[tuple[int, int]]:

@@ -412,6 +412,7 @@ async function makeCapital(){
   const d=await post(`/api/village/${CURRENT}/make-capital`,null,"modalMsg");
   if(d){ let msg="🏰 Capitale déplacée ici.";
     if(d.reduced&&d.reduced.length) msg+=` ${d.reduced.length} champ(s) de l'ancienne capitale ramené(s) à 10.`;
+    if(d.removed&&d.removed.length) msg+=` Bâtiments retirés (incompatibles capitale) : ${d.removed.join(", ")}.`;
     document.getElementById("modalMsg").textContent=msg;
     render(d.village); load(); }
 }
