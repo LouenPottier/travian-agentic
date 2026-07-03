@@ -30,7 +30,11 @@ Puis ouvrir http://127.0.0.1:8000/
       **attaque depuis la carte** (villages et oasis : combat vs animaux sauvages), **place de marché**
       (marchands : transfert de ressources, capacité/nombre selon tribu + niveau du marché). Reste :
       expansion (2ᵉ village : points de culture, colons, fondation), **occupation** d'oasis.
-- [ ] **Phase 4** — API agents & bots
+- [~] **Phase 4** — agents LLM : **macros pilotées par Claude Code** (onglet 🤖 Macro) —
+      un agent gère un village vers un objectif en langage naturel via le **Claude Agent SDK**
+      (Claude Code local, pas d'API/clé) en n'utilisant que les actions joueur légitimes
+      (« sans tricher » : `app/agents/`, verrouillé par `tests/test_macro.py`). Reste : bot
+      scripté, autres joueurs joués par des agents, messagerie.
 
 ### Tests
 ```bash
@@ -56,7 +60,8 @@ app/api/        (à venir) endpoints REST structurés
 app/main.py    application FastAPI + UI minimale
 web/           interface web (HTML/JS vanilla)
 scripts/       outils (validate_data.py : recoupe les valeurs avec kirilloid.ru)
-agents/        (à venir) bots et agents LLM jouant via l'API
+app/agents/    macros/agents LLM jouant via l'API (tools = serveur MCP → endpoints joueur ;
+               macro = boucle Claude Agent SDK, « sans tricher »)
 ```
 
 ### Principe « paresseux » (fidèle à Travian)

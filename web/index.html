@@ -71,6 +71,8 @@
     <button id="tab_reports" class="ghost" onclick="showTab('reports')">📜 Rapports
       <span id="repBadge" class="badge" style="display:none"></span></button>
     <button id="tab_ranking" class="ghost" onclick="showTab('ranking')">🏆 Classement</button>
+    <button id="tab_macro" class="ghost" onclick="showTab('macro')">🤖 Macro
+      <span id="macroBadge" class="badge" style="display:none;background:#3a7"></span></button>
   </nav>
   <div id="villageView">
     <div id="builds"></div>
@@ -114,6 +116,14 @@
     <div class="cost" style="margin-top:8px;opacity:.7">
       Points d'attaque / de défense = consommation de céréales des troupes ennemies
       détruites (à l'attaque / en défense). Ressources pillées = butin cumulé.</div>
+  </div>
+  <div id="macroView" style="display:none">
+    <h2>🤖 Macro — pilotée par Claude Code</h2>
+    <div class="cost" style="opacity:.7;margin-bottom:10px">
+      Décris un objectif ; Claude Code gère le village courant en n'utilisant que les
+      actions joueur légitimes (coûts, temps, files, loyauté respectés — aucune triche).
+      Nécessite le CLI <code>claude</code> installé et connecté (ton abonnement, pas d'API).</div>
+    <div id="macro"></div>
   </div>
 </main>
 <div id="modal" onclick="if(event.target.id==='modal')closeModal()">
@@ -454,6 +464,7 @@ async function deleteRoute(id){
   if(d) render(d.village);
 }
 function fillTrade(i,max){ const el=document.getElementById("trade_"+i); if(el){ el.value=max; updateMerchantHint(); } }
+function fillUnit(id,max){ const el=document.getElementById(id); if(el) el.value=max; }
 function updateMerchantHint(){
   const m=MODAL_MARKET; if(!m) return;
   let total=0; for(let i=0;i<4;i++){ const el=document.getElementById("trade_"+i); total+=el?(parseInt(el.value)||0):0; }
@@ -498,7 +509,7 @@ function renderRallyPanel(P){
       <div id="scoutModeRow" style="display:none;margin:6px 0">🔍 Espionner : <select id="sendScoutMode">
         <option value="res">Ressources</option><option value="def">Défenses</option></select>
         <span class="cost" style="opacity:.6">— éclaireurs seuls</span></div><div class="bldlist">`;
-    for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
+    for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (<a href="#" onclick="fillUnit('send_${t.index}',${t.count});return false" style="color:#caa15a">${t.count}</a>)</div>
       <input id="send_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
     h+=`</div>`;
     h+=siegeOptions(v.siege,"send");
@@ -918,7 +929,7 @@ function attackForm(){
         <option value="res">Ressources</option><option value="def">Défenses</option></select>
         <span class="cost" style="opacity:.6">— éclaireurs seuls</span></div>`:``)
     + `<div class="bldlist">`;
-  for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
+  for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (<a href="#" onclick="fillUnit('mapunit_${t.index}',${t.count});return false" style="color:#caa15a">${t.count}</a>)</div>
     <input id="mapunit_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
   h+=`</div>`;
   if(isVillage) h+=siegeOptions(LAST.siege,"map");  // siège : cible village seulement
@@ -1046,14 +1057,17 @@ function showTab(name){ TAB=name;
   document.getElementById("heroView").style.display = name==="hero"?"":"none";
   document.getElementById("reportsView").style.display = name==="reports"?"":"none";
   document.getElementById("rankingView").style.display = name==="ranking"?"":"none";
+  document.getElementById("macroView").style.display = name==="macro"?"":"none";
   document.getElementById("tab_village").className = name==="village"?"":"ghost";
   document.getElementById("tab_map").className = name==="map"?"":"ghost";
   document.getElementById("tab_hero").className = name==="hero"?"":"ghost";
   document.getElementById("tab_reports").className = name==="reports"?"":"ghost";
   document.getElementById("tab_ranking").className = name==="ranking"?"":"ghost";
+  document.getElementById("tab_macro").className = name==="macro"?"":"ghost";
   if(name==="reports") loadReports();
   if(name==="hero") loadHero();
   if(name==="ranking") loadRanking();
+  if(name==="macro") loadMacro();
   if(name==="map"){ if(!MAP_LOADED){ centerOnVillage(); MAP_LOADED=true; } else loadMap(); }
 }
 let MAP_LOADED=false;
@@ -1065,8 +1079,8 @@ function fmtDate(ts){ return new Date(ts*1000).toLocaleString("fr-FR",
 function fmtSiege(s){
   if(!s) return "";
   const parts=[];
-  if(s.mur) parts.push(`🧱 ${s.mur.batiment} ${s.mur.avant}→${s.mur.apres}`);
-  for(const d of (s.degats||[])) parts.push(`💥 ${d.batiment} ${d.avant}→${d.apres}`);
+  if(s.mur && s.mur.avant!==s.mur.apres) parts.push(`🧱 ${s.mur.batiment} ${s.mur.avant}→${s.mur.apres}`);
+  for(const d of (s.degats||[])) if(d.avant!==d.apres) parts.push(`💥 ${d.batiment} ${d.avant}→${d.apres}`);
   return parts.length?` · `+parts.join(" · "):"";
 }
 
@@ -1082,6 +1096,99 @@ function fmtLoyalty(b){
   if(b.conquete) return ` · 👑 conquis ! (loyauté → 0)`;
   if(l.bloque) return ` · 👑 ${l.chefs} chef(s) — conquête bloquée (${l.bloque})`;
   return ` · 🏳️ loyauté ${l.avant}%→${l.apres}% (−${l.baisse}, ${l.chefs} chef(s))`;
+}
+
+// ----- Détail dépliable des rapports de combat ------------------------------
+function resLine(r){ r=r||[0,0,0,0];
+  return `🪵 ${r[0]}   🧱 ${r[1]}   ⛏️ ${r[2]}   🌾 ${r[3]}`; }
+
+// Tableau des pertes par type d'unité (lignes non vides seulement).
+// avant = effectif engagé, apres = survivants, caps = capturés (piégés, retranchés
+// des pertes). Retourne "" si on n'a pas les noms (anciens rapports sans snapshot).
+function lossTable(noms, avant, apres, caps, lblAvant, lblApres){
+  if(!noms || !avant) return "";
+  let rows="";
+  for(let i=0;i<10;i++){
+    const a=avant[i]||0; if(!a) continue;
+    const s=apres?(apres[i]||0):0, c=caps?(caps[i]||0):0, perte=Math.max(0,a-s-c);
+    rows+=`<tr style="border-top:1px solid rgba(255,255,255,.06)">
+      <td style="padding:2px 8px">${noms[i]||("unité "+(i+1))}</td>
+      <td style="padding:2px 8px;text-align:right">${a}</td>
+      <td style="padding:2px 8px;text-align:right;color:#e88">${perte?("−"+perte):"0"}</td>
+      ${caps?`<td style="padding:2px 8px;text-align:right">${c||"—"}</td>`:""}
+      <td style="padding:2px 8px;text-align:right;color:#8d8">${s}</td></tr>`;
+  }
+  if(!rows) return `<div class="cost" style="opacity:.6">aucune troupe</div>`;
+  return `<table style="width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;margin:2px 0 6px">
+    <tr style="text-align:left;opacity:.6"><th style="padding:2px 8px">Unité</th>
+    <th style="padding:2px 8px;text-align:right">${lblAvant}</th>
+    <th style="padding:2px 8px;text-align:right">Pertes</th>
+    ${caps?'<th style="padding:2px 8px;text-align:right">🪤</th>':""}
+    <th style="padding:2px 8px;text-align:right">${lblApres}</th></tr>${rows}</table>`;
+}
+
+// Détail des destructions de siège (muraille + bâtiments), avant→après.
+function siegeDetail(s){
+  if(!s) return "";
+  let h="";
+  if(s.mur) h+=(s.mur.avant!==s.mur.apres)
+    ?`<div class="cost">🧱 ${s.mur.batiment} : niveau ${s.mur.avant} → ${s.mur.apres}</div>`
+    :`<div class="cost" style="opacity:.6">🧱 ${s.mur.batiment} n'a pas été endommagé (niveau ${s.mur.avant})</div>`;
+  for(const d of (s.degats||[])) h+=(d.avant!==d.apres)
+    ?`<div class="cost">💥 ${d.batiment} : niveau ${d.avant} → ${d.apres}</div>`
+    :`<div class="cost" style="opacity:.6">💥 ${d.batiment} n'a pas été endommagé (niveau ${d.avant})</div>`;
+  return h;
+}
+
+function animalsDetail(list){
+  if(!list||!list.length) return `<div class="cost" style="opacity:.6">aucun</div>`;
+  return `<div class="cost">`+list.map(a=>`${a.name}×${a.count}`).join("   ·   ")+`</div>`;
+}
+
+// Contenu du panneau déplié pour un rapport de combat ("" ⇒ pas cliquable).
+function reportDetail(b){
+  let h="";
+  if(b.type==="offensive"){
+    h+=secTitle("⚔️ Tes troupes")
+      +lossTable(b.noms, b.envoyees, b.survivantes, b.captures, "Envoyées", "Rentrées");
+    if(b.def_avant && b.def_avant.some(x=>x))
+      h+=secTitle("💀 Pertes du défenseur")
+        +lossTable(b.noms_def, b.def_avant, b.def_apres, null, "Présentes", "Survivantes");
+    const pille=b.butin.reduce((a,x)=>a+x,0);
+    const capTxt=(b.capacite!=null)?` <span style="opacity:.6">— ${pille} / ${b.capacite} transportable(s) (${b.capacite?Math.round(pille*100/b.capacite):0} %)</span>`:"";
+    h+=secTitle("💰 Butin rapporté")+`<div class="cost">${resLine(b.butin)}${capTxt}</div>`;
+    const sd=siegeDetail(b.siege); if(sd) h+=secTitle("🏚️ Destructions")+sd;
+    if(b.loyaute && !b.loyaute.bloque)
+      h+=secTitle("🏳️ Loyauté")+`<div class="cost">${fmtLoyalty(b).replace(/^ · /,"")||"—"}</div>`;
+  } else if(b.type==="defensive"){
+    h+=secTitle("🛡️ Tes défenseurs")
+      +lossTable(b.noms_def, b.def_avant, b.def_apres, null, "Présentes", "Survivantes");
+    if(b.captures && b.captures.some(x=>x))
+      h+=secTitle("🪤 Assaillants piégés")+`<div class="cost">`
+        +b.captures.map((c,i)=>c?`${b.noms?b.noms[i]:("unité "+(i+1))}×${c}`:"").filter(Boolean).join("   ·   ")+`</div>`;
+    h+=secTitle("💸 Ressources pillées")+`<div class="cost">${resLine(b.butin_pille)}</div>`;
+    const sd=siegeDetail(b.siege); if(sd) h+=secTitle("🏚️ Destructions subies")+sd;
+  } else if(b.type==="oasis"){
+    h+=secTitle("⚔️ Tes troupes")
+      +lossTable(b.noms, b.envoyees, b.survivantes, null, "Envoyées", "Rentrées");
+    if(b.occupee)
+      h+=secTitle("🛡️ Garnison ennemie")
+        +`<div class="cost">avant ${b.garnison_avant} → après ${b.garnison_apres}</div>`;
+    else{
+      h+=secTitle("🐾 Animaux avant")+animalsDetail(b.animaux_avant)
+        +secTitle("🐾 Animaux après")+animalsDetail(b.animaux_apres);
+    }
+  }
+  return h;
+}
+// Détails restés ouverts (par id de rapport) — préservés à travers le rafraîchissement.
+const OPEN_REPORTS=new Set();
+function toggleReport(el){
+  const d=el.querySelector(".rdetail"); if(!d) return;
+  const rid=+el.dataset.rid, open=d.style.display!=="none";
+  d.style.display=open?"none":"";
+  if(open) OPEN_REPORTS.delete(rid); else OPEN_REPORTS.add(rid);
+  const car=el.querySelector(".rcaret"); if(car) car.textContent=open?"▸":"▾";
 }
 
 async function loadReports(){
@@ -1122,9 +1229,14 @@ async function loadReports(){
         +(b.vu?" — informations dérobées":" — repoussé, aucune info")
         +(b.pertes_pct?` · éclaireurs −${b.pertes_pct}%`:"");
     else line="renfort";
-    return `<div class="bld" style="text-align:left;margin-bottom:6px">
-      <b>${r.title}</b> <small style="opacity:.55">${fmtDate(r.created_at)}</small>
-      <div class="cost">${line}</div></div>`;
+    const detail=reportDetail(b);
+    const open=detail && OPEN_REPORTS.has(r.id);
+    const clic=detail?` onclick="toggleReport(this)" data-rid="${r.id}" style="text-align:left;margin-bottom:6px;cursor:pointer"`
+                     :` style="text-align:left;margin-bottom:6px"`;
+    return `<div class="bld"${clic}>
+      <b>${r.title}</b> <small style="opacity:.55">${fmtDate(r.created_at)}</small>${detail?` <span class="rcaret" style="opacity:.5">${open?"▾":"▸"}</span>`:""}
+      <div class="cost">${line}</div>
+      ${detail?`<div class="rdetail" style="display:${open?"":"none"};margin-top:6px;border-top:1px dashed rgba(255,255,255,.15);padding-top:4px">${detail}</div>`:""}</div>`;
   }).join("") : `<div class="cost" style="opacity:.6">aucun rapport</div>`;
   // Consulter l'onglet « marque comme lu » ; sinon on affiche le compteur.
   if(TAB==="reports" && reps.length) LAST_SEEN_T=reps[0].created_at;
@@ -1182,6 +1294,77 @@ async function updateHeroBadge(){
     if(TAB==="hero") renderHero(d);
   }catch(e){}
 }
+// --- Macro (agent Claude Code) ---------------------------------------------
+const MACRO_ICON={info:"ℹ️",assistant:"💬",tool_use:"🔧",tool_result:"↩️",error:"❌"};
+async function loadMacro(){
+  try{ const d=await (await fetch(`/api/village/${CURRENT}/macro`)).json(); renderMacro(d); }
+  catch(e){}
+}
+function renderMacro(d){
+  const box=document.getElementById("macro");
+  if(!box.dataset.built){
+    box.innerHTML=`
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
+        <textarea id="macroGoal" rows="2" style="flex:1;min-width:260px"
+          placeholder="ex. améliore tous les champs de céréales au niveau 5, puis entraîne 50 lanciers"></textarea>
+        <select id="macroModel" style="align-self:center">
+          <option value="sonnet">Sonnet (défaut)</option>
+          <option value="opus">Opus</option>
+          <option value="haiku">Haiku</option>
+        </select>
+        <button id="macroGo" onclick="startMacro()" style="align-self:center">▶️ Lancer</button>
+        <button id="macroStop" onclick="stopMacro()" class="ghost" style="align-self:center">⏹️ Stop</button>
+      </div>
+      <div id="macroStatus" class="cost" style="margin:8px 0"></div>
+      <div id="macroJournal" style="max-height:460px;overflow:auto;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:8px;font-size:13px;line-height:1.45"></div>`;
+    box.dataset.built="1";
+  }
+  const running=!!d.running;
+  document.getElementById("macroGo").disabled=running;
+  document.getElementById("macroStop").disabled=!running;
+  const st=document.getElementById("macroStatus");
+  const badge=document.getElementById("macroBadge");
+  if(d.status==="none"){
+    st.textContent="Aucune macro sur ce village.";
+    badge.style.display="none";
+  }else{
+    const dot=running?"🟢":(d.status==="error"?"🔴":(d.status==="stopped"?"⏹️":"✅"));
+    st.innerHTML=`${dot} <b>${d.status}</b> · modèle ${d.model} · ${d.turns} tours · ${d.elapsed}s`
+      +(d.goal?` · 🎯 <i>${escMacro(d.goal)}</i>`:"")
+      +(d.summary?`<br>📝 ${escMacro(d.summary)}`:"")
+      +(d.error?`<br>❌ ${escMacro(d.error)}`:"");
+    badge.textContent=running?"▶":""; badge.style.display=running?"inline-block":"none";
+  }
+  const j=document.getElementById("macroJournal");
+  const atBottom=j.scrollHeight-j.scrollTop-j.clientHeight<40;
+  j.innerHTML=(d.log||[]).map(e=>{
+    const ic=MACRO_ICON[e.kind]||"·";
+    if(e.kind==="tool_use")
+      return `<div><span style="opacity:.5">${e.t}s</span> ${ic} <b>${e.tool}</b> <span style="opacity:.75">${escMacro(JSON.stringify(e.input))}</span></div>`;
+    if(e.kind==="tool_result"){
+      const col=e.error?"#e77":"#8c8";
+      return `<div><span style="opacity:.5">${e.t}s</span> ${ic} <span style="color:${col};opacity:.85">${escMacro(e.text)}</span></div>`;
+    }
+    const col=e.kind==="error"?"#e77":(e.kind==="assistant"?"#ddd":"#9ab");
+    return `<div><span style="opacity:.5">${e.t}s</span> ${ic} <span style="color:${col}">${escMacro(e.text||"")}</span></div>`;
+  }).join("")||`<div class="cost" style="opacity:.5">— journal vide —</div>`;
+  if(atBottom) j.scrollTop=j.scrollHeight;
+}
+function escMacro(s){ return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+async function startMacro(){
+  const goal=document.getElementById("macroGoal").value.trim();
+  if(!goal){ document.getElementById("msg").textContent="⚠️ Objectif vide."; return; }
+  const model=document.getElementById("macroModel").value;
+  const d=await post(`/api/village/${CURRENT}/macro`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify({goal,model})},"msg");
+  if(d) renderMacro(d);
+}
+async function stopMacro(){
+  const d=await post(`/api/village/${CURRENT}/macro/stop`,null,"msg");
+  if(d) renderMacro(d);
+}
+setInterval(()=>{ if(TAB==="macro") loadMacro(); }, 3000);
+
 setInterval(load,4000); setInterval(loadReports,6000);
 setInterval(updateHeroBadge,7000);
 setInterval(()=>{ if(TAB==="map" && MAP_LOADED) loadMap(); }, 5000);

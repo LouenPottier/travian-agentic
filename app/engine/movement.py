@@ -457,19 +457,22 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
         def_after = list(target.troops)  # pertes défensives (avant conquête/prisonniers)
 
         # Persistance du siège (attaque seulement) : niveaux réappliqués au défenseur.
+        # On récapitule **tout** ce qui a été visé — y compris sans dégât (avant==apres)
+        # ⇒ le rapport affiche « n'a pas été endommagé » le cas échéant.
         if kind == "attack":
+            has_rams = any(fight[i] for i in range(10)
+                           if UNITS[origin.tribe][i].is_ram)
             wall_slot = _wall_slot(target)
-            if wall_slot is not None and res.wall != target.slots[wall_slot].level:
+            if wall_slot is not None and has_rams:
                 siege["mur"] = {"batiment": BLD.get(target.slots[wall_slot].building_id).name,
                                 "avant": target.slots[wall_slot].level, "apres": res.wall}
                 target.slots[wall_slot].level = res.wall
             for si, newlvl in zip(cata_slots, res.buildings):
                 before = target.slots[si].level
-                if newlvl != before:
-                    siege["degats"].append({
-                        "batiment": BLD.get(target.slots[si].building_id).name,
-                        "avant": before, "apres": newlvl})
-                    target.slots[si].level = newlvl
+                siege["degats"].append({
+                    "batiment": BLD.get(target.slots[si].building_id).name,
+                    "avant": before, "apres": newlvl})
+                target.slots[si].level = newlvl
 
     survivors = [round(fight[i] * (1 - off_losses)) for i in range(10)]
 
@@ -502,6 +505,7 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
     # Butin : capacité de transport des survivants. Sur une **conquête**, les
     # ressources restent au village (elles changent de propriétaire avec lui) : pas de
     # butin rapporté.
+    cap = 0
     if conquest is None:
         cap = sum(survivors[i] * UNITS[origin.tribe][i].capacity for i in range(10))
         avail = sum(target.resources)
@@ -572,12 +576,19 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
     conquis = conquest is not None
     titre_off = (f"👑 Conquête de {target.name}" if conquis
                  else f"⚔️ Attaque sur {target.name}")
+    # Noms d'unités figés dans le rapport (snapshot) : le front affiche le détail des
+    # pertes par type sans avoir à connaître la tribu — et un village qui change de
+    # tribu à la conquête n'altère pas les anciens rapports.
+    noms_off = [u.name for u in UNITS[origin.tribe]]
+    noms_def = [u.name for u in UNITS[def_tribe]]
     store.add_report(origin.player_id, now, titre_off, {
         "type": "offensive", "cible": target.name, "kind": kind,
         "envoyees": list(units), "survivantes": survivors, "captures": trapped,
-        "pertes_pct": round(off_losses * 100), "butin": loot,
+        "pertes_pct": round(off_losses * 100), "butin": loot, "capacite": cap,
+        "def_avant": def_before, "def_apres": def_after, "noms_def": noms_def,
         "hero": att_hero is not None, "hero_alive": hero_alive, "siege": siege,
-        "loyaute": loyalty_event, "conquete": conquis, "artefact": artefact})
+        "loyaute": loyalty_event, "conquete": conquis, "artefact": artefact,
+        "noms": noms_off})
     titre_def = (f"👑 {target.name} a été conquis !" if conquis
                  else f"🛡️ Défense de {target.name}")
     store.add_report(def_owner, now, titre_def, {
@@ -585,7 +596,8 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
         "def_avant": def_before, "def_apres": target.troops, "captures": trapped,
         "pertes_pct": round(def_losses * 100), "butin_pille": loot,
         "hero_def": def_hero is not None, "hero_def_perdu": hero_def_lost,
-        "siege": siege, "loyaute": loyalty_event, "conquete": conquis})
+        "siege": siege, "loyaute": loyalty_event, "conquete": conquis,
+        "noms_def": noms_def, "noms": noms_off})
     return survivors, loot, hero_alive, conquis
 
 
@@ -676,7 +688,8 @@ def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
                          "garnison_apres": sum(defender_after) if occupied else 0,
                          "cleared": sum(defender_after) == 0,
                          "conquete": conquest,
-                         "hero": att_hero is not None, "hero_alive": hero_alive})
+                         "hero": att_hero is not None, "hero_alive": hero_alive,
+                         "noms": [u.name for u in UNITS[origin.tribe]]})
     return survivors, hero_alive
 
 

@@ -34,6 +34,7 @@ from app.engine import natars as NAT
 from app.engine import artifacts as ART
 from app.engine import ranking as RK
 from app.data import items as IT
+from app.agents import macro as MACRO
 
 app = FastAPI(title="Travian local — T4.6")
 
@@ -1090,6 +1091,40 @@ def reports():
     if HUMAN_PLAYER_ID is not None:
         _tick_player(HUMAN_PLAYER_ID, now)
     return {"reports": store.reports_for(HUMAN_PLAYER_ID)}
+
+
+# --- Macros pilotées par Claude Code (Phase 4) -------------------------------
+class MacroStart(BaseModel):
+    goal: str
+    model: str | None = None   # sonnet | opus | haiku (défaut sonnet)
+
+
+@app.post("/api/village/{village_id}/macro")
+async def macro_start(village_id: int, body: MacroStart):
+    """Lance une macro (agent Claude Code) qui gère ce village vers `goal`.
+    L'agent n'agit que via les actions joueur légitimes (aucune triche possible)."""
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    if not body.goal.strip():
+        raise HTTPException(status_code=400, detail="Objectif vide.")
+    try:
+        return MACRO.start_macro(village_id, body.goal, body.model or MACRO.DEFAULT_MODEL,
+                                 v.name, TRIBE_NAMES_FR.get(v.tribe, "?"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/village/{village_id}/macro")
+def macro_state(village_id: int):
+    """État + journal de la macro courante de ce village (pour le rafraîchissement UI)."""
+    return MACRO.status_for(village_id)
+
+
+@app.post("/api/village/{village_id}/macro/stop")
+async def macro_stop(village_id: int):
+    """Interrompt la macro en cours sur ce village."""
+    return await MACRO.stop_macro(village_id)
 
 
 @app.get("/")

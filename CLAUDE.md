@@ -429,5 +429,23 @@ Par ordre de rentabilité recommandé :
 > Note : la **famine** est déjà faite (`village.py._starve` : grenier vide + prod de blé négative →
 > mort de troupes), ne pas la relister comme manquante.
 
-Puis Phase 4 (API agents : schéma observation/action, bot scripté, puis agents LLM via le
-Claude Agent SDK).
+## Phase 4 — agents LLM (en cours)
+- ✅ **Macros pilotées par Claude Code** (`app/agents/{tools,macro}.py`, endpoints
+  `/api/village/{id}/macro[/stop]`, onglet 🤖 Macro, verrouillé par `tests/test_macro.py`) :
+  depuis le site, on lance un **agent LLM** qui gère un village vers un objectif en langage
+  naturel (« améliore tous les champs niveau 10 », objectifs militaires, etc.).
+  **Cerveau = Claude Code local via le Claude Agent SDK** (`claude-agent-sdk`, pilote le CLI
+  `claude` — abonnement, **PAS l'API Anthropic, aucune clé, aucune facturation par token**).
+  **« Sans tricher » garanti structurellement** : (a) l'agent ne dispose QUE d'un serveur MCP
+  in-process (`tools.py`) dont chaque outil **forwarde vers l'endpoint HTTP joueur existant**
+  (self-HTTP `127.0.0.1:8000` → surface identique à l'UI ; coûts/temps/files/loyauté/ownership
+  déjà enforced, 403/400 remontés à l'agent) ; (b) les **outils intégrés de Claude Code**
+  (Bash/Read/Write/Edit/…) sont **interdits** (`disallowed_tools` + gate `can_use_tool` qui
+  ne laisse passer que `mcp__travian__*`) → jamais d'accès direct à `game.db`. Périmètre v1 =
+  **tout** (construction, entraînement, recherche, forge, célébrations, marché/routes, envoi
+  d'armées, farm list, expansion, oasis) + `wait`/`finish` pour piloter la boucle (sim
+  paresseuse ×100 : `wait` dort puis renvoie l'état frais). Garde-fous : `max_turns`, deadline
+  wall-clock, `wait` borné, une macro/village, Stop = `interrupt()`. Registre **en mémoire**
+  (les macros ne survivent pas au reload uvicorn). Modèles : sonnet (défaut)/opus/haiku.
+- ⬜ Reste : bot scripté déterministe ; faire jouer *les autres joueurs* par des agents ;
+  messagerie ; schéma observation/action formalisé pour usage externe.
