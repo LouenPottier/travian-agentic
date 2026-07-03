@@ -252,7 +252,13 @@ Phase 3 en cours (livrée incrémentalement) :
   compte** et **palais ⇄ résidence exclusifs** dans un même village (`available_buildings` +
   `account_has_palace`, calculé par `main._account_has_palace`) ; (c) **changer de capitale** se
   fait depuis le **palais** (niv ≥ 1) via `capital.make_capital` — l'ancienne capitale est
-  rétrogradée et ses **champs > 10 ramenés à 10** (sans remboursement, fidèle). API
+  rétrogradée et ses **champs > 10 ramenés à 10** (sans remboursement, fidèle) ; (d) **bâtiments
+  incompatibles retirés au changement** (`capital._drop_incompatible`, support.travian.com :
+  « If your new capital has Great Barracks or Great Stable, those will be removed ») — la
+  **nouvelle** capitale perd ses bâtiments `non_capital` (grande caserne/écurie, grand
+  entrepôt/grenier), l'**ancienne** ses bâtiments `capital_only` (tailleur de pierre, brasserie ⇒
+  fête de la bière interrompue), files purgées, sans remboursement ; généralisé via les flags
+  pour préserver l'invariant de `available_buildings`. API
   `POST /api/village/{id}/make-capital` (+ `is_capital`/`can_make_capital` exposés par `serialize`) ;
   UI : panneau « Capitale » dans la modale du palais.
 - ⬜ **Combat héros — affinages** : pas encore de monture→cavalerie en combat, ni de prise en
@@ -359,7 +365,9 @@ Par ordre de rentabilité recommandé :
    - **Abreuvoir** (Romain, id 40) : `village.unit_upkeep` retire **−1 céréale/h** par cavalier romain
      aux paliers (Equites Legati niv 10, Imperatoris niv 15, Caesaris niv 20) ; `horse_pool_train_factor`
      accélère l'entraînement de la cavalerie de **−1 %/niveau** (appliqué dans `enqueue_training`).
-   - **Brasserie** (Teuton, id 34, capitale, niv max 10) : `app/engine/brewery.py` — **fête de la
+   - **Brasserie** (Teuton, id 34, **capitale uniquement** — flag `capital_only=True` sur le
+     bâtiment, recoupé support.travian.com/unofficialtravian « Brewery » ; sans ce flag un Teuton
+     pouvait la bâtir hors capitale, corrigé + verrou `test_capital.test_brewery_capital_only`), niv max 10) : `app/engine/brewery.py` — **fête de la
      bière** (coût fixe 3870/1680/215/10900, durée 72 h ÷ vitesse serveur) ⇒ tant qu'active,
      **+1 %/niveau d'attaque pour tout le compte** (`attack_bonus`, branché dans `movement._resolve_battle`
      via `off.bonus`, s'ajoute au bonus du héros). État `Village.brewery_festival` (persisté). API

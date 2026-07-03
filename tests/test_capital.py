@@ -108,3 +108,56 @@ def test_make_capital():
     assert old_cap.slots[1].level == 10, old_cap.slots[1].level
     assert (1, 15) in info["reduced"]
     print("✅ capitale déplacée ; champs > 10 de l'ancienne ramenés à 10")
+
+
+def test_brewery_capital_only():
+    """La brasserie (Teuton) ne se construit qu'en **capitale** (support.travian.com /
+    unofficialtravian « Brewery ») — flag capital_only sur le bâtiment."""
+    fresh()
+    pid = store.create_player("Teu", Tribe.TEUTONS)
+    v = V.new_village("Cap", Tribe.TEUTONS, server_speed=100, x=0, y=0,
+                      player_id=pid, is_capital=True)
+    # Prérequis de la brasserie : grenier niv 20 + place de rassemblement niv 10.
+    v.slots[18] = V.Slot(building_id=B.GRANARY, level=20)
+    v.slots[19] = V.Slot(building_id=B.RALLY_POINT, level=10)
+    assert B.BREWERY in {b.id for b in V.available_buildings(v, 20)}, \
+        "brasserie offerte en capitale (Teuton, prérequis remplis)"
+    v.is_capital = False
+    assert B.BREWERY not in {b.id for b in V.available_buildings(v, 20)}, \
+        "brasserie interdite hors capitale"
+    print("✅ brasserie : capitale uniquement")
+
+
+def test_make_capital_drops_incompatible_buildings():
+    """Au changement de capitale : la **nouvelle** capitale perd ses bâtiments
+    `non_capital` (grand entrepôt…) et l'**ancienne** ses bâtiments `capital_only`
+    (tailleur de pierre…). Sans remboursement (support.travian.com « Capital Village »)."""
+    fresh()
+    now = time.time()
+    pid = store.create_player("Toi", Tribe.GAULS)
+
+    # Capitale actuelle : un tailleur de pierre (capital_only) qui devra disparaître.
+    cap = V.new_village("Cap", Tribe.GAULS, server_speed=100, x=0, y=0,
+                        player_id=pid, is_capital=True)
+    cap.slots[15] = V.Slot(building_id=B.STONEMASON, level=5)
+    cap = store.insert_village(cap)
+
+    # Futur de capitale : un grand entrepôt (non_capital) qui devra disparaître,
+    # plus le palais requis pour déclarer la capitale.
+    sec = V.new_village("Sec", Tribe.GAULS, server_speed=100, x=5, y=0,
+                        player_id=pid, is_capital=False)
+    sec.slots[20] = V.Slot(building_id=B.PALACE, level=1)
+    sec.slots[15] = V.Slot(building_id=B.GREAT_WAREHOUSE, level=3)
+    sec = store.insert_village(sec)
+
+    info = CAP.make_capital(pid, sec.id, now)
+    new_cap = store.load_village(sec.id)
+    old_cap = store.load_village(cap.id)
+
+    assert B.GREAT_WAREHOUSE not in {s.building_id for s in new_cap.slots.values()}, \
+        "le grand entrepôt doit disparaître de la nouvelle capitale"
+    assert B.GREAT_WAREHOUSE in info["removed_new_capital"]
+    assert B.STONEMASON not in {s.building_id for s in old_cap.slots.values()}, \
+        "le tailleur de pierre doit disparaître de l'ancienne capitale"
+    assert B.STONEMASON in info["removed_old_capital"]
+    print("✅ changement de capitale : bâtiments incompatibles retirés des deux côtés")
