@@ -37,6 +37,16 @@ class BuildOrder:
 
 
 @dataclass
+class DemolishOrder:
+    """Démolition d'un bâtiment (bâtiment principal, cf. enqueue_demolish) : ramène
+    l'emplacement `slot_index` à `target_level` (un niveau à la fois jusqu'à 0 =
+    destruction). Une seule démolition à la fois par village (vrai Travian)."""
+    slot_index: int
+    target_level: int
+    finish_at: float
+
+
+@dataclass
 class TrainOrder:
     building_id: int      # bâtiment d'entraînement (caserne/écurie/atelier/résidence)
     unit_index: int       # index de l'unité dans la tribu
@@ -77,6 +87,9 @@ class Village:
     resources: list[float] = field(default_factory=lambda: [750.0, 750.0, 750.0, 750.0])
     updated_at: float = field(default_factory=_time.time)
     queue: list[BuildOrder] = field(default_factory=list)
+    # Démolition en cours (bâtiment principal niv 10+, cf. enqueue_demolish) : None ou
+    # un DemolishOrder. Une seule à la fois, indépendante de la file de construction.
+    demolition: "DemolishOrder | None" = None
     server_speed: int = 1
     max_queue: int = 1  # nombre d'ordres simultanés (Romains : 2, géré plus tard)
     is_capital: bool = True
@@ -262,6 +275,16 @@ def granary_capacity(v: Village) -> int:
     return _storage(v, B.GRANARY, B.GREAT_GRANARY)
 
 
+def cranny_protection(v: Village) -> int:
+    """Ressources (par type) cachées aux pillards / à l'espionnage : somme de toutes
+    les cachettes du village (bâtiment multi). Les **Gaulois** bénéficient d'une
+    capacité **doublée** (vrai T4.6, support.travian.com « Cranny »). Utilisé par les
+    rapports d'espionnage ; le butin ne l'exploite pas encore (cf. combat, à raffiner)."""
+    total = sum(F.cranny(s.level) for s in v.slots.values()
+                if s.building_id == B.CRANNY and s.level > 0)
+    return total * 2 if v.tribe == Tribe.GAULS else total
+
+
 def capacities(v: Village) -> list[int]:
     w = warehouse_capacity(v)
     g = granary_capacity(v)
@@ -307,6 +330,8 @@ def tick(v: Village, now: float | None = None) -> None:
                 break
             events.append((t, "trap", tp))
             t += tp.per_unit
+    if v.demolition is not None and v.demolition.finish_at <= now:
+        events.append((v.demolition.finish_at, "demolish", v.demolition))
     events.sort(key=lambda e: e[0])
 
     cursor = v.updated_at
@@ -323,6 +348,12 @@ def tick(v: Village, now: float | None = None) -> None:
             v.research[payload.unit_index] = 1
         elif kind == "upgrade":
             v.upgrades[payload.unit_index] = payload.target_level
+        elif kind == "demolish":  # un niveau démoli (0 ⇒ bâtiment détruit)
+            slot = v.slots.get(payload.slot_index)
+            if slot is not None:
+                slot.level = payload.target_level
+                if payload.target_level <= 0:
+                    del v.slots[payload.slot_index]  # emplacement libéré
         else:  # trap : un piège construit
             v.traps += 1
             payload.remaining -= 1
@@ -334,6 +365,8 @@ def tick(v: Village, now: float | None = None) -> None:
     v.research_queue = [ro for ro in v.research_queue if ro.finish_at > now]
     v.upgrade_queue = [uo for uo in v.upgrade_queue if uo.finish_at > now]
     v.trap_queue = [tp for tp in v.trap_queue if tp.remaining > 0]
+    if v.demolition is not None and v.demolition.finish_at <= now:
+        v.demolition = None
     v.updated_at = now
 
 
@@ -459,6 +492,77 @@ def enqueue_build(v: Village, slot_index: int, now: float | None = None) -> Buil
     order = BuildOrder(slot_index=slot_index, target_level=target,
                        finish_at=now + build_time(v, building, target))
     v.queue.append(order)
+    return order
+
+
+# --- Démolition de bâtiments (bâtiment principal niv 10+) --------------------
+# Mécanique fidèle au vrai Travian (kirilloid muet — il ne modélise que la
+# construction) : le **bâtiment principal niveau 10** débloque la démolition. On
+# rase un bâtiment **un niveau à la fois** jusqu'au niveau 0 (destruction), une
+# seule démolition à la fois par village, indépendamment de la file de construction.
+# **Aucun remboursement** des ressources (seul l'entretien/population est libéré).
+# Ne se démolissent PAS : les champs de ressources, le bâtiment principal (qui
+# fournit la fonction) et la place de rassemblement (bâtiments essentiels, jamais
+# proposés par le vrai jeu). Sources : support.travian.com « Demolishing Buildings »,
+# unofficialtravian « Demolishing Buildings », wiki Fandom « Demolition ».
+# ⚠️ **Durée = approximation documentée** : la valeur exacte n'est pas publiée ; les
+# sources disent « comme la construction, selon le niveau du bâtiment principal ».
+# On prend donc le temps de construction du niveau retiré (build_time : réduction BP
+# du bâtiment principal + vitesse serveur incluses).
+DEMOLISH_MIN_LEVEL = 10
+NON_DEMOLISHABLE = (B.MAIN_BUILDING, B.RALLY_POINT)
+
+
+def can_demolish(v: Village) -> bool:
+    """True si le village peut démolir (bâtiment principal niv ≥ DEMOLISH_MIN_LEVEL)."""
+    return building_levels(v).get(B.MAIN_BUILDING, 0) >= DEMOLISH_MIN_LEVEL
+
+
+def is_demolishable_slot(v: Village, slot_index: int) -> bool:
+    """True si l'emplacement héberge un bâtiment démolissable (présent, niveau ≥ 1,
+    ni champ de ressources, ni bâtiment essentiel non démolissable)."""
+    slot = v.slots.get(slot_index)
+    if slot is None or slot.level < 1:
+        return False
+    if BLD.get(slot.building_id).slot == "res":
+        return False
+    return slot.building_id not in NON_DEMOLISHABLE
+
+
+def demolish_time(v: Village, building: Building, from_level: int, to_level: int) -> float:
+    """Temps total (s) pour démolir de `from_level` à `to_level`, un niveau à la fois.
+    Chaque niveau retiré coûte le temps de sa construction (cf. commentaire ci-dessus)."""
+    return sum(build_time(v, building, l) for l in range(to_level + 1, from_level + 1))
+
+
+def enqueue_demolish(v: Village, slot_index: int, target_level: int | None = None,
+                     now: float | None = None) -> DemolishOrder:
+    """Met en démolition l'emplacement `slot_index` jusqu'à `target_level`
+    (None ⇒ un seul niveau ; 0 ⇒ destruction complète)."""
+    now = now or _time.time()
+    tick(v, now)
+    if not can_demolish(v):
+        raise BuildError(f"Bâtiment principal niveau {DEMOLISH_MIN_LEVEL} requis "
+                         f"pour démolir.")
+    if v.demolition is not None:
+        raise BuildError("Une démolition est déjà en cours.")
+    slot = v.slots.get(slot_index)
+    if slot is None or slot.level < 1:
+        raise BuildError("Rien à démolir ici.")
+    if not is_demolishable_slot(v, slot_index):
+        raise BuildError("Ce bâtiment ne peut pas être démoli.")
+    if slot_index in (o.slot_index for o in v.queue):
+        raise BuildError("Cet emplacement est en cours de construction.")
+    if target_level is None:
+        target_level = slot.level - 1
+    if not (0 <= target_level < slot.level):
+        raise BuildError("Niveau cible de démolition invalide.")
+
+    building = BLD.get(slot.building_id)
+    order = DemolishOrder(
+        slot_index=slot_index, target_level=target_level,
+        finish_at=now + demolish_time(v, building, slot.level, target_level))
+    v.demolition = order
     return order
 
 

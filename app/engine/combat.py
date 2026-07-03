@@ -8,7 +8,8 @@ d'immensité variable, bonus de muraille, béliers (démolition de mur) et catap
 Les pièges gaulois (capture pré-combat des assaillants) sont appliqués en amont,
 côté movement.py (cf. village.distribute_traps / add_prisoners), pas ici.
 
-Non encore géré (phases ultérieures) : espionnage (scan), fête (party),
+L'espionnage (reconnaissance) est traité à part dans `engine.scouting` (éclaireurs
+seuls, hors de cette formule de bataille). Non encore géré ici : fête (party),
 métallurgie, bière teutonne (brew).
 
 Vecteurs de validation (cf. tests) issus de t4/combat/combat.spec.ts.

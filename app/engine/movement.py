@@ -199,7 +199,8 @@ def catapult_target_limit(v) -> int:
 def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
          units: list[int], now: float | None = None,
          target_x: int | None = None, target_y: int | None = None,
-         with_hero: bool = False, targets: list[int] | None = None) -> dict:
+         with_hero: bool = False, targets: list[int] | None = None,
+         scout_mode: str | None = None) -> dict:
     """Envoie une armée vers un village (`target_id`) **ou** une oasis (`target_x/y`).
 
     Cible village : `target_id` renseigné. Cible oasis : `target_id=None` et
@@ -209,6 +210,10 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
     attaques/razzias uniquement. `targets` : ids de bâtiments visés par les catapultes
     (siège) — pris en compte uniquement sur une **attaque** de village, plafonné par
     l'atelier (cf. `catapult_target_limit`).
+
+    `kind="scout"` : **espionnage** — n'embarque **que des éclaireurs** (cf.
+    engine.scouting), vers un **village** uniquement ; `scout_mode` = "res" (ressources)
+    ou "def" (défenses). Pas de héros, pas de butin, pas de siège.
     """
     now = now or _time.time()
     origin = store.load_village(origin_id)
@@ -242,6 +247,21 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
         if (target_x, target_y) == (origin.x, origin.y):
             raise MoveError("Cible identique à l'origine.")
         tx, ty = target_x, target_y
+
+    # Espionnage : uniquement des éclaireurs, vers un village, sans héros ni siège.
+    from app.engine import scouting as SC
+    scout_mode_final = None
+    if kind == "scout":
+        if target is None:
+            raise MoveError("L'espionnage vise un village, pas une oasis.")
+        if with_hero:
+            raise MoveError("Le héros n'accompagne pas une mission d'espionnage.")
+        scout_idx = set(SC.scout_indices(origin.tribe))
+        if any(units[i] > 0 for i in range(10) if i not in scout_idx):
+            raise MoveError("L'espionnage n'embarque que des éclaireurs.")
+        if sum(units) <= 0:
+            raise MoveError("Aucun éclaireur sélectionné.")
+        scout_mode_final = scout_mode if scout_mode in ("res", "def") else "res"
 
     # Héros : embarqué sur une attaque/razzia, OU envoyé en **assistance** (renfort)
     # vers un de tes propres villages — il s'y **réinstalle** (nouveau rattachement)
@@ -284,6 +304,9 @@ def send(origin_id: int, target_id: int | None, player_id: int, kind: str,
     cata = []
     if kind == "attack" and target_id is not None and targets:
         cata = [int(t) for t in targets][:catapult_target_limit(origin)]
+    elif kind == "scout":
+        # La colonne `targets` porte le mode d'espionnage (réutilisée, cf. _resolve_scout).
+        cata = [scout_mode_final]
 
     # Vitesse : l'armée (min des unités) ; si seul le héros voyage, sa propre vitesse.
     # Place de tournoi du village d'origine : bonus de vitesse au-delà de 20 cases.
@@ -382,8 +405,10 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
     no_battle = sum(fight) == 0 and att_hero is None
 
     def_before = list(target.troops)
+    def_after = list(target.troops)  # snapshot post-combat (avant conquête, cf. classement)
     def_owner = target.player_id  # capturé avant une éventuelle conquête (le rapport
                                   # défensif doit aller à l'ancien propriétaire)
+    def_tribe = target.tribe      # idem : la conquête fait adopter la tribu du conquérant
     loot = [0, 0, 0, 0]
     hero_alive = True
     def_hero = None
@@ -429,6 +454,7 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
         res = C.combat(place, off, [deff])
         off_losses, def_losses = res.off_losses, res.def_losses
         target.troops = [round(target.troops[i] * (1 - def_losses)) for i in range(10)]
+        def_after = list(target.troops)  # pertes défensives (avant conquête/prisonniers)
 
         # Persistance du siège (attaque seulement) : niveaux réappliqués au défenseur.
         if kind == "attack":
@@ -532,6 +558,15 @@ def _resolve_battle(origin, target, units, kind, now, att_hero=None,
     won = not no_battle and sum(target.troops) == 0
     artefact = ART.try_capture(origin, target, att_hero, hero_alive, kind, won, now)
 
+    # Classement : points d'attaque/défense = upkeep des troupes ennemies tuées
+    # (attaquant ↔ défenseurs tués, défenseur ↔ assaillants tués) + ressources
+    # pillées à l'attaquant. Cf. engine.ranking (mécanique TravianZ Ranking.php).
+    from app.engine import ranking as RK
+    att_losses_vec = [fight[i] - survivors[i] for i in range(10)]
+    def_losses_vec = [def_before[i] - def_after[i] for i in range(10)]
+    RK.credit_battle(origin.player_id, origin.tribe, att_losses_vec,
+                     def_owner, def_tribe, def_losses_vec, raided=sum(loot))
+
     # Rapports (captures = assaillants piégés ; survivants = ceux qui ont combattu).
     # `loyaute`/`conquete` : effet d'un administrateur (chef/sénateur) sur la cible.
     conquis = conquest is not None
@@ -608,6 +643,17 @@ def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
         hero_alive = not H.apply_combat(att_hero, res.off_losses, killed, now)
         H.save(att_hero)
 
+    # Classement : l'attaquant gagne des points d'attaque pour les défenseurs tués
+    # (animaux Nature ou garnison ennemie). La Nature n'est pas un joueur classé
+    # (def_pid=None) ; une garnison ennemie crédite son propriétaire en défense.
+    from app.engine import ranking as RK
+    def_tribe = owner.tribe if occupied else Tribe.NATURE
+    def_pid = owner.player_id if occupied else None
+    att_losses_vec = [units[i] - survivors[i] for i in range(10)]
+    def_losses_vec = [defender_before[i] - defender_after[i] for i in range(10)]
+    RK.credit_battle(origin.player_id, origin.tribe, att_losses_vec,
+                     def_pid, def_tribe, def_losses_vec)
+
     # Re-conquête : oasis tenue par un autre joueur, **garnison détruite**, **attaque
     # normale** victorieuse (des troupes survivent) ⇒ on la lui vole (village éligible).
     # Une **razzia** ne prend jamais l'oasis (fidélité Travian / TravianZ).
@@ -632,6 +678,55 @@ def _resolve_oasis(origin, tile, units, kind, now, att_hero=None):
                          "conquete": conquest,
                          "hero": att_hero is not None, "hero_alive": hero_alive})
     return survivors, hero_alive
+
+
+def _resolve_scout(origin, target, units, mode, now):
+    """Résout une mission d'espionnage à l'arrivée (cf. engine.scouting).
+
+    Éclaireurs seuls (validé à l'envoi). L'attaquant ne perd d'éclaireurs **que si** la
+    cible en abrite (« détecté ») : sinon rapport complet et aucune perte. Si la
+    puissance de reconnaissance défensive **≥** offensive, les éclaireurs sont anéantis
+    (aucune info renvoyée) et le défenseur est notifié. Renvoie les survivants (retour
+    à vide vers l'origine).
+    """
+    from app.engine import scouting as SC
+    n_off = sum(units)
+    # Puissance offensive : éclaireurs améliorés (forge), pénalisée par le moral
+    # (gros village attaquant ⇒ malus, comme au combat).
+    off_power = SC.scout_power(origin.tribe, units, origin.upgrades)
+    off_power *= C.morale(V.population(origin), V.population(target))
+    # Puissance défensive : éclaireurs de la cible (renforts inclus, fusionnés dans
+    # troops) améliorés (forge), renforcés par la muraille.
+    def_power = SC.scout_power(target.tribe, target.troops, target.upgrades)
+    def_power *= 1 + SC.wall_def_bonus(target)
+    n_def = SC.scout_count(target.tribe, target.troops)
+
+    off_loss, def_loss, detected = SC.resolve_losses(off_power, def_power, n_off, n_def)
+    survivors = [round(units[i] * (1 - off_loss)) for i in range(10)]
+    got_info = sum(survivors) > 0
+
+    # Pertes des éclaireurs défenseurs (indices d'éclaireur uniquement).
+    if detected and def_loss > 0:
+        for i in SC.scout_indices(target.tribe):
+            target.troops[i] = round(target.troops[i] * (1 - def_loss))
+        store.save_village(target)
+
+    intel = SC.gather_intel(target, mode) if got_info else None
+    store.add_report(origin.player_id, now,
+                     (f"🔍 Espionnage de {target.name}" if got_info
+                      else f"🔍 Espionnage repoussé — {target.name}"), {
+                         "type": "scout_off", "cible": target.name, "mode": mode,
+                         "envoyes": sum(units), "survivants": sum(survivors),
+                         "pertes_pct": round(off_loss * 100), "detecte": detected,
+                         "info": intel, "coords": [target.x, target.y]})
+    # Le défenseur n'est prévenu que s'il a **détecté** l'intrusion (il avait des
+    # éclaireurs). Un village PNJ (player_id None) n'a pas de boîte de rapports.
+    if detected and target.player_id is not None:
+        store.add_report(target.player_id, now, f"🔍 {target.name} espionné !", {
+            "type": "scout_def", "attaquant": origin.name, "mode": mode,
+            "vu": got_info, "pertes_pct": round(def_loss * 100),
+            "coords": [origin.x, origin.y]})
+    return survivors
 
 
 # FastAPI exécute les endpoints synchrones dans un pool de threads : deux requêtes
@@ -777,6 +872,25 @@ def _process_due_locked(now: float) -> int:
                              {"type": "reinforce", "de": origin.name, "unites": units,
                               "hero": rehomed})
             store.delete_movement(m["id"])
+            continue
+
+        if m["kind"] == "scout":
+            # Espionnage : reconnaissance à l'arrivée, puis retour à vide des survivants.
+            V.tick(target, now)
+            mode = (json.loads(m["targets"]) or ["res"])[0]
+            survivors = _resolve_scout(origin, target, units, mode, now)
+            V.tick(origin, now)
+            for i in range(10):  # les éclaireurs tués quittent les effectifs en vol
+                origin.away[i] = max(0, origin.away[i] - (units[i] - survivors[i]))
+            store.save_village(origin)
+            store.delete_movement(m["id"])
+            if sum(survivors) > 0:
+                secs = travel_seconds(m["target_x"], m["target_y"], origin.x, origin.y,
+                                      origin.tribe, survivors, origin.server_speed,
+                                      arena_level(origin))
+                store.insert_movement(m["origin_id"], m["target_id"], m["owner_id"],
+                                      "scout", "back", survivors, now + secs,
+                                      target_x=m["target_x"], target_y=m["target_y"])
             continue
 
         # attack / raid — cible village (target_id) ou oasis (coordonnées seules)

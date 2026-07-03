@@ -427,6 +427,11 @@ def revive(player_id: int, now: float | None = None) -> dict:
     tick(h, home, now)
     if h.status != "dead":
         raise HeroError("Le héros n'est pas mort.")
+    # Résurrection déjà lancée (délai en cours) : ne pas re-payer / remettre le
+    # compte à rebours à zéro. `tick` (ci-dessus) l'a fait repasser « home » si
+    # le délai était échu ⇒ ici on est encore mort ET en attente.
+    if h.busy_until and now < h.busy_until:
+        raise HeroError("Résurrection déjà en cours.")
     if home is None:
         raise HeroError("Village d'attache introuvable.")
     if V.building_levels(home).get(B.HERO_MANSION, 0) < 1:

@@ -70,6 +70,7 @@
       <span id="heroBadge" class="badge" style="display:none;background:#3a7"></span></button>
     <button id="tab_reports" class="ghost" onclick="showTab('reports')">📜 Rapports
       <span id="repBadge" class="badge" style="display:none"></span></button>
+    <button id="tab_ranking" class="ghost" onclick="showTab('ranking')">🏆 Classement</button>
   </nav>
   <div id="villageView">
     <div id="builds"></div>
@@ -105,6 +106,14 @@
   <div id="reportsView" style="display:none">
     <h2>Rapports</h2>
     <div id="reports"></div>
+  </div>
+  <div id="rankingView" style="display:none">
+    <h2>🏆 Classement</h2>
+    <div id="rankTabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+    <div id="ranking"></div>
+    <div class="cost" style="margin-top:8px;opacity:.7">
+      Points d'attaque / de défense = consommation de céréales des troupes ennemies
+      détruites (à l'attaque / en défense). Ressources pillées = butin cumulé.</div>
   </div>
 </main>
 <div id="modal" onclick="if(event.target.id==='modal')closeModal()">
@@ -217,7 +226,8 @@ function render(v){
     if(slot && !slot.empty){
       const im=bimg(slot.building_id);
       ccells.push({gx,gy, color:"#7a5e3c", img:im,
-        icon:(im?"":(BICON[slot.building_id]||"🏚️"))+(slot.finish_in!=null?"⏳":""),
+        icon:(im?"":(BICON[slot.building_id]||"🏚️"))
+             +(slot.finish_in!=null?"⏳":"")+(slot.demolish_finish_in!=null?"🏚️":""),
         badge:slot.level, click:`openSlot(${s})`});
     } else {
       const can = LAST.is_own && slot && slot.buildable && slot.buildable.length;
@@ -230,7 +240,9 @@ function render(v){
   // File de construction : on mémorise l'instant de fin absolu (horloge client)
   // pour décompter le temps restant en direct, chaque seconde.
   ACTIVE_BUILDS = v.slots.filter(s=>s && s.finish_in!=null)
-    .map(s=>({label:`${s.name} → niveau ${s.target_level}`, end:Date.now()/1000 + s.finish_in}));
+    .map(s=>({label:`${s.name} → niveau ${s.target_level}`, end:Date.now()/1000 + s.finish_in}))
+    .concat(v.slots.filter(s=>s && s.demolish_finish_in!=null)
+      .map(s=>({label:`🏚️ ${s.name} → niveau ${s.demolish_target}`, end:Date.now()/1000 + s.demolish_finish_in})));
   renderBuilds();
 
   renderOverview(v);
@@ -282,6 +294,15 @@ function buildModal(s){
   else if(s.next_cost==null) body+=`<div class="cost">Niveau maximum atteint.</div>`;
   else { body+=`<div class="cost">Améliorer → niv ${s.level+1} : ${fmtCost(s.next_cost)} · ⏱️ ${fmtTimer(s.next_time)}</div>`;
     if(LAST.is_own) body+=`<button onclick="build(${s.index})">Améliorer → ${s.level+1}</button>`; }
+  // Démolition (bâtiment principal niv 10+) : sans remboursement, un niveau à la fois.
+  if(s.demolish_finish_in!=null)
+    body+=`<div class="cost" style="margin-top:6px">🏚️ démolition → niv ${s.demolish_target} (${fmtTimer(s.demolish_finish_in)})</div>`;
+  else if(LAST.is_own && s.can_demolish){
+    let opts=""; for(let l=s.level-1; l>=0; l--) opts+=`<option value="${l}">niv ${l}${l===0?" (détruire)":""}</option>`;
+    body+=`<div class="cost" style="margin-top:6px;opacity:.85">🏚️ Démolir (aucun remboursement) →
+      <select id="demTo_${s.index}" style="width:96px">${opts}</select>
+      <button onclick="demolish(${s.index})">Démolir</button></div>`;
+  }
   L.innerHTML=body;
   // Le rafraîchissement périodique (load/4s) rappelle buildModal : si on
   // reconstruisait le panneau fonctionnel pendant une saisie, on détruirait
@@ -328,6 +349,9 @@ async function build(idx){ const d=await post(`/api/village/${CURRENT}/build/${i
   if(d) render(d.village); }
 async function construct(idx,id){ const d=await post(`/api/village/${CURRENT}/construct/${idx}/${id}`,null,"modalMsg");
   if(d) render(d.village); }
+async function demolish(idx){ const sel=document.getElementById(`demTo_${idx}`);
+  const to=sel?sel.value:""; const url=`/api/village/${CURRENT}/demolish/${idx}`+(to!==""?`?target_level=${to}`:"");
+  const d=await post(url,null,"modalMsg"); if(d) render(d.village); }
 async function train(bid,idx){ const q=Math.max(1,parseInt(document.getElementById(`q_${bid}_${idx}`).value)||1);
   const d=await post(`/api/village/${CURRENT}/train/${bid}/${idx}/${q}`,null,"modalMsg"); if(d) render(d.village); }
 async function research(i){ const d=await post(`/api/village/${CURRENT}/research/${i}`,null,"modalMsg"); if(d) render(d.village); }
@@ -468,8 +492,12 @@ function renderRallyPanel(P){
   else {
     h+=`<div style="margin:6px 0">Cible : <select id="sendTarget">`+
       tg.map(x=>`<option value="${x.id}">${x.name} (${x.x}|${x.y}) — ${x.player}</option>`).join("")+`</select>
-      Type : <select id="sendKind"><option value="raid">Razzia</option>
-        <option value="attack">Attaque</option><option value="reinforce">Renfort</option></select></div><div class="bldlist">`;
+      Type : <select id="sendKind" onchange="document.getElementById('scoutModeRow').style.display=this.value==='scout'?'':'none'"><option value="raid">Razzia</option>
+        <option value="attack">Attaque</option><option value="reinforce">Renfort</option>
+        <option value="scout">🔍 Espionnage</option></select></div>
+      <div id="scoutModeRow" style="display:none;margin:6px 0">🔍 Espionner : <select id="sendScoutMode">
+        <option value="res">Ressources</option><option value="def">Défenses</option></select>
+        <span class="cost" style="opacity:.6">— éclaireurs seuls</span></div><div class="bldlist">`;
     for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
       <input id="send_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
     h+=`</div>`;
@@ -521,9 +549,10 @@ async function raidFarmList(){
 async function sendArmy(){
   const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("send_"+i); units[i]=el?(parseInt(el.value)||0):0; }
   const hx=document.getElementById("sendHero");
+  const sm=document.getElementById("sendScoutMode");
   const body={target_id:+document.getElementById("sendTarget").value,
     kind:document.getElementById("sendKind").value, units, with_hero:hx?hx.checked:false,
-    targets:collectSiege(LAST.siege,"send")};
+    targets:collectSiege(LAST.siege,"send"), scout_mode:sm?sm.value:null};
   const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
   if(d){ document.getElementById("msg").textContent=`🚀 Armée envoyée — arrivée dans ${d.arrive_in}s`;
@@ -714,7 +743,7 @@ function heroStatusLabel(d){
     :d.status==="adventure"?`en aventure (${fmtTimer(d.busy_in)})`
     :d.status==="moving"?"🚶 en déplacement"
     :d.status==="attacking"?"⚔️ au combat"
-    :d.status==="dead"?"💀 mort":d.status;
+    :d.status==="dead"?(d.busy_in>0?`⏳ résurrection (${fmtTimer(d.busy_in)})`:"💀 mort"):d.status;
 }
 function renderHero(d){
   // « en déplacement » (renfort) et « au combat » comptent comme occupé : pas
@@ -730,7 +759,10 @@ function renderHero(d){
     <div class="cost" style="margin-top:6px">Statut : <b>${heroStatusLabel(d)}</b></div>
     <div class="cost">🏠 ${d.home_village} · force ${d.effective.strength} · att +${d.effective.off_bonus}% · déf +${d.effective.def_bonus}%</div>
     <div class="cost">régén ${d.effective.regen_per_day}/j · prod ${d.effective.production_per_hour}/h ${d.res_choice<0?"de chaque":""}(${d.res_choice_label}) · vitesse ${d.effective.speed}</div>`;
-  if(d.status==="dead") h+=`<button onclick="reviveHero()">⚰️ Ressusciter (${fmtCost(d.revive_cost)})</button>`;
+  if(d.status==="dead"){
+    if(d.busy_in>0) h+=`<div class="cost" style="margin-top:6px">⏳ Résurrection en cours — ${fmtTimer(d.busy_in)}</div>`;
+    else h+=`<button onclick="reviveHero()">⚰️ Ressusciter (${fmtCost(d.revive_cost)})</button>`;
+  }
   h+=`</div>`;
   // Attributs
   h+=`<div class="bld" style="text-align:left"><div class="name">Attributs (${d.points} pt dispo)</div>`;
@@ -877,12 +909,15 @@ function attackForm(){
   let kindOpts = ownOasis
     ? `<option value="reinforce">Renfort (garnison)</option>`
     : `<option value="raid">Razzia</option><option value="attack">Attaque</option>`
-      + (isVillage?`<option value="reinforce">Renfort</option>`:``);
+      + (isVillage?`<option value="reinforce">Renfort</option><option value="scout">🔍 Espionnage</option>`:``);
   const heroAv = LAST.hero_here && LAST.hero_here.available;
   let h=`<div style="margin-top:10px;border-top:1px solid #5a4330;padding-top:8px">
     <b>🚀 Envoyer depuis ${LAST.name}</b>
-    <div style="margin:6px 0">Type : <select id="mapKind">${kindOpts}</select></div>
-    <div class="bldlist">`;
+    <div style="margin:6px 0">Type : <select id="mapKind" onchange="document.getElementById('mapScoutRow').style.display=this.value==='scout'?'':'none'">${kindOpts}</select></div>`
+    + (isVillage?`<div id="mapScoutRow" style="display:none;margin:6px 0">🔍 Espionner : <select id="mapScoutMode">
+        <option value="res">Ressources</option><option value="def">Défenses</option></select>
+        <span class="cost" style="opacity:.6">— éclaireurs seuls</span></div>`:``)
+    + `<div class="bldlist">`;
   for(const t of troops) h+=`<div class="bld"><div class="cost">${t.name} (${t.count})</div>
     <input id="mapunit_${t.index}" type="number" min="0" max="${t.count}" value="0" style="width:58px"></div>`;
   h+=`</div>`;
@@ -896,8 +931,10 @@ async function sendFromMap(){
   const units=[]; for(let i=0;i<10;i++){ const el=document.getElementById("mapunit_"+i);
     units[i]=el?(parseInt(el.value)||0):0; }
   const hx=document.getElementById("mapHero");
+  const sm=document.getElementById("mapScoutMode");
   const body={kind:document.getElementById("mapKind").value, units,
-    with_hero:hx?hx.checked:false, targets:collectSiege(LAST.siege,"map"), ...MAP_TARGET};
+    with_hero:hx?hx.checked:false, targets:collectSiege(LAST.siege,"map"),
+    scout_mode:sm?sm.value:null, ...MAP_TARGET};
   const d=await post(`/api/village/${CURRENT}/send`,{method:"POST",
     headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},"modalMsg");
   if(d){ closeModal(); loadMap(); loadReports(); updateHeroBadge();
@@ -1008,12 +1045,15 @@ function showTab(name){ TAB=name;
   document.getElementById("mapView").style.display = name==="map"?"":"none";
   document.getElementById("heroView").style.display = name==="hero"?"":"none";
   document.getElementById("reportsView").style.display = name==="reports"?"":"none";
+  document.getElementById("rankingView").style.display = name==="ranking"?"":"none";
   document.getElementById("tab_village").className = name==="village"?"":"ghost";
   document.getElementById("tab_map").className = name==="map"?"":"ghost";
   document.getElementById("tab_hero").className = name==="hero"?"":"ghost";
   document.getElementById("tab_reports").className = name==="reports"?"":"ghost";
+  document.getElementById("tab_ranking").className = name==="ranking"?"":"ghost";
   if(name==="reports") loadReports();
   if(name==="hero") loadHero();
+  if(name==="ranking") loadRanking();
   if(name==="map"){ if(!MAP_LOADED){ centerOnVillage(); MAP_LOADED=true; } else loadMap(); }
 }
 let MAP_LOADED=false;
@@ -1067,6 +1107,20 @@ async function loadReports(){
     else if(b.type==="settle") line=b.ok?`🏕️ ${b.name} fondé en (${b.coords[0]}|${b.coords[1]})`:`fondation impossible (${b.coords[0]}|${b.coords[1]})`;
     else if(b.type==="reinforce"){ const n=(b.unites||[]).reduce((a,c)=>a+c,0);
       line=`➕ depuis ${b.de} · ${n} unité(s)`+(b.hero?" · 🦸 héros rattaché ici":""); }
+    else if(b.type==="scout_off"){
+      const perte=b.pertes_pct?` · pertes ${b.pertes_pct}%`:"";
+      if(!b.info) line=`🔍 espionnage (${b.mode==="def"?"défenses":"ressources"}) repoussé — aucune info${perte}`;
+      else{ const t=b.info.troops||[];
+        const tr=t.length?t.map(u=>`${u.name}×${u.count}`).join(", "):"aucune troupe";
+        if(b.mode==="def"){ const df=b.info.defenses||{};
+          const w=df.wall?`🧱 ${df.wall.name} niv ${df.wall.level}`:"🧱 pas de mur";
+          line=`🔍 défenses · ${w} · 🏛️ résidence ${df.residence} / palais ${df.palace} · troupes : ${tr}${perte}`; }
+        else{ const r=b.info.resources||[0,0,0,0];
+          line=`🔍 ressources 🪵${r[0]} 🧱${r[1]} ⛏️${r[2]} 🌾${r[3]} · 🕳️ ${b.info.protected}/ress. cachés · troupes : ${tr}${perte}`; } } }
+    else if(b.type==="scout_def")
+      line=`🔍 espionné par ${b.attaquant} (${b.mode==="def"?"défenses":"ressources"})`
+        +(b.vu?" — informations dérobées":" — repoussé, aucune info")
+        +(b.pertes_pct?` · éclaireurs −${b.pertes_pct}%`:"");
     else line="renfort";
     return `<div class="bld" style="text-align:left;margin-bottom:6px">
       <b>${r.title}</b> <small style="opacity:.55">${fmtDate(r.created_at)}</small>
@@ -1077,6 +1131,43 @@ async function loadReports(){
   const n=(TAB==="reports")?0:reps.filter(r=>r.created_at>LAST_SEEN_T).length;
   const badge=document.getElementById("repBadge");
   badge.textContent=n; badge.style.display=n?"inline-block":"none";
+}
+
+// ----- Classement -----------------------------------------------------------
+let RANK_DATA=null, RANK_CAT="population";
+function fmtRankVal(cat,v){
+  if(cat==="raided") return `🪵🧱⛏️🌾 ${v.toLocaleString("fr-FR")}`;
+  if(cat==="population") return v.toLocaleString("fr-FR");
+  return v.toLocaleString("fr-FR");
+}
+async function loadRanking(){
+  RANK_DATA=await (await fetch("/api/ranking")).json();
+  if(!RANK_DATA.categories.some(c=>c.key===RANK_CAT)) RANK_CAT=RANK_DATA.categories[0].key;
+  const tabs=document.getElementById("rankTabs");
+  tabs.innerHTML=RANK_DATA.categories.map(c=>
+    `<button class="${c.key===RANK_CAT?'':'ghost'}" onclick="setRankCat('${c.key}')">${c.icon} ${c.label}</button>`
+  ).join("");
+  renderRanking();
+}
+function setRankCat(k){ RANK_CAT=k; loadRanking(); }
+function renderRanking(){
+  const cat=RANK_DATA.categories.find(c=>c.key===RANK_CAT);
+  const box=document.getElementById("ranking");
+  if(!cat || !cat.rows.length){ box.innerHTML=`<div class="cost" style="opacity:.6">aucun joueur classé</div>`; return; }
+  const medal=r=>r===1?"🥇":r===2?"🥈":r===3?"🥉":r;
+  let h=`<table style="width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums">
+    <tr style="text-align:left;opacity:.6"><th style="padding:4px 8px">#</th><th style="padding:4px 8px">Joueur</th><th style="padding:4px 8px">Peuple</th><th style="padding:4px 8px;text-align:right">${cat.icon} ${cat.label}</th></tr>`;
+  h+=cat.rows.map(r=>{
+    const own=r.is_own?"background:rgba(120,200,120,.18);font-weight:700":"";
+    const npc=r.is_npc?' <small style="opacity:.5">(PNJ)</small>':'';
+    return `<tr style="border-top:1px solid rgba(255,255,255,.08);${own}">
+      <td style="padding:4px 8px">${medal(r.rank)}</td>
+      <td style="padding:4px 8px">${r.name}${npc}</td>
+      <td style="padding:4px 8px;opacity:.8">${r.tribe_name}</td>
+      <td style="padding:4px 8px;text-align:right">${fmtRankVal(RANK_CAT,r.value)}</td></tr>`;
+  }).join("");
+  h+=`</table>`;
+  box.innerHTML=h;
 }
 
 async function updateHeroBadge(){

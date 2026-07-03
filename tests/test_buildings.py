@@ -285,6 +285,58 @@ def test_settler_chief_training_gating():
     print("✅ colons/chefs : niveau 10 requis, chefs réservés au palais")
 
 
+def test_demolish():
+    """Démolition (bâtiment principal niv 10+, vrai Travian) : un niveau à la fois
+    jusqu'à destruction (niv 0 ⇒ emplacement libéré), sans remboursement, une seule
+    à la fois, jamais sur les champs / bâtiment principal / rassemblement."""
+    now = time.time()
+    v = _gaul(WAREHOUSE=5)  # slot 20 = entrepôt niv 5 ; slot 19 = bâtiment principal niv 12
+    ware = 20
+
+    # Sans bâtiment principal niv 10, pas de démolition possible.
+    v.slots[19].level = 9
+    assert not V.can_demolish(v)
+    try:
+        V.enqueue_demolish(v, ware, now=now)
+        assert False, "démolition sans bâtiment principal niv 10 aurait dû échouer"
+    except V.BuildError as e:
+        print("refus attendu (bâtiment principal <10) :", e)
+    v.slots[19].level = 12
+    assert V.can_demolish(v)
+
+    # Champs de ressources / bâtiment principal / rassemblement : non démolissables.
+    v.slots[1].level = 5                                          # champ de bois niv 5
+    assert not V.is_demolishable_slot(v, 1)                       # champ de bois (res)
+    assert not V.is_demolishable_slot(v, 19)                      # bâtiment principal
+    assert not V.is_demolishable_slot(v, V.RALLY_SLOT)            # rassemblement
+    assert V.is_demolishable_slot(v, ware)                        # entrepôt : OK
+
+    # Aucun remboursement : les ressources ne bougent pas à la mise en démolition.
+    before = list(v.resources)
+    o = V.enqueue_demolish(v, ware, now=now)                       # défaut : un niveau (5→4)
+    assert o.target_level == 4
+    assert v.resources == before, "la démolition ne doit rien rembourser ni coûter"
+
+    # Une seule démolition à la fois.
+    try:
+        V.enqueue_demolish(v, ware, now=now)
+        assert False, "deux démolitions simultanées auraient dû échouer"
+    except V.BuildError as e:
+        print("refus attendu (déjà en cours) :", e)
+
+    V.tick(v, o.finish_at + 1)
+    assert v.slots[ware].level == 4, ("niveau non redescendu", v.slots[ware].level)
+    assert v.demolition is None, "démolition non purgée après complétion"
+
+    # Destruction complète (target 0) ⇒ emplacement libéré (slot supprimé).
+    o2 = V.enqueue_demolish(v, ware, target_level=0, now=o.finish_at + 1)
+    assert o2.target_level == 0
+    V.tick(v, o2.finish_at + 1)
+    assert ware not in v.slots, "l'emplacement doit être libéré après destruction"
+    print("✅ démolition : niv 10 requis, un niveau à la fois, sans remboursement, "
+          "destruction ⇒ emplacement libéré")
+
+
 def main():
     test_research_gating()
     test_smithy_combat()
@@ -294,8 +346,9 @@ def main():
     test_siege_wiring()
     test_mansion_trapper_build_time()
     test_settler_chief_training_gating()
+    test_demolish()
     print("\n✅ Mécaniques de bâtiments (académie / forge / trappeur / pièges / "
-          "grande caserne / siège / temps manoir / colons-chefs) validées")
+          "grande caserne / siège / temps manoir / colons-chefs / démolition) validées")
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ import sqlite3
 from pathlib import Path
 
 from app.data.tribes import Tribe
-from app.engine.village import (Village, Slot, BuildOrder, TrainOrder,
+from app.engine.village import (Village, Slot, BuildOrder, DemolishOrder, TrainOrder,
                                 ResearchOrder, UpgradeOrder, TrapOrder)
 
 DB_PATH = Path(__file__).resolve().parent.parent / "game.db"
@@ -30,6 +30,8 @@ def village_to_dict(v: Village) -> dict:
         "away": v.away,
         "slots": {str(i): [s.building_id, s.level] for i, s in v.slots.items()},
         "queue": [[o.slot_index, o.target_level, o.finish_at] for o in v.queue],
+        "demolition": ([v.demolition.slot_index, v.demolition.target_level,
+                        v.demolition.finish_at] if v.demolition else None),
         "training": [[t.building_id, t.unit_index, t.remaining, t.per_unit, t.next_finish]
                      for t in v.training],
         "research": v.research,
@@ -51,6 +53,8 @@ def village_from_row(row: sqlite3.Row) -> Village:
     d = json.loads(row["data"])
     slots = {int(i): Slot(building_id=b, level=l) for i, (b, l) in d["slots"].items()}
     queue = [BuildOrder(slot_index=s, target_level=t, finish_at=f) for s, t, f in d["queue"]]
+    dem = d.get("demolition")
+    demolition = DemolishOrder(slot_index=dem[0], target_level=dem[1], finish_at=dem[2]) if dem else None
     training = [TrainOrder(building_id=b, unit_index=u, remaining=r, per_unit=p, next_finish=f)
                 for b, u, r, p, f in d.get("training", [])]
     research_queue = [ResearchOrder(unit_index=u, finish_at=f)
@@ -64,7 +68,8 @@ def village_from_row(row: sqlite3.Row) -> Village:
         tribe=Tribe(row["tribe"]), x=row["x"], y=row["y"],
         is_capital=bool(row["is_capital"]),
         slots=slots, resources=d["resources"], updated_at=d["updated_at"],
-        queue=queue, server_speed=d["server_speed"], max_queue=d["max_queue"],
+        queue=queue, demolition=demolition,
+        server_speed=d["server_speed"], max_queue=d["max_queue"],
         troops=d["troops"], away=d.get("away", [0] * 10), training=training,
         research=d.get("research", [0] * 10), research_queue=research_queue,
         upgrades=d.get("upgrades", [0] * 10), upgrade_queue=upgrade_queue,
@@ -201,7 +206,12 @@ def init_db() -> None:
             except sqlite3.OperationalError:
                 pass  # colonne déjà présente
         for col in ("culture REAL NOT NULL DEFAULT 0",
-                    "culture_at REAL NOT NULL DEFAULT 0"):
+                    "culture_at REAL NOT NULL DEFAULT 0",
+                    # Classement / statistiques (cf. engine.ranking) : compteurs
+                    # cumulés au fil des combats. Points = upkeep des troupes tuées.
+                    "off_points REAL NOT NULL DEFAULT 0",
+                    "def_points REAL NOT NULL DEFAULT 0",
+                    "raided REAL NOT NULL DEFAULT 0"):
             try:
                 c.execute(f"ALTER TABLE players ADD COLUMN {col}")
             except sqlite3.OperationalError:
@@ -437,6 +447,28 @@ def find_player_by_name(name: str) -> int | None:
     with connect() as c:
         row = c.execute("SELECT id FROM players WHERE name=? LIMIT 1", (name,)).fetchone()
     return row["id"] if row else None
+
+
+def all_players() -> list[dict]:
+    """Tous les joueurs avec leurs compteurs de classement (cf. engine.ranking)."""
+    with connect() as c:
+        rows = c.execute(
+            "SELECT id, name, tribe, is_npc, off_points, def_points, raided "
+            "FROM players ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+# --- Statistiques / classement ----------------------------------------------
+def add_player_stats(player_id: int, off: float = 0.0, deff: float = 0.0,
+                     raided: float = 0.0) -> None:
+    """Incrémente les compteurs de classement d'un joueur (points d'attaque/défense,
+    ressources pillées). Cumulatif ; appelé à la résolution des combats."""
+    if player_id is None or (off == 0 and deff == 0 and raided == 0):
+        return
+    with connect() as c:
+        c.execute("UPDATE players SET off_points=off_points+?, "
+                  "def_points=def_points+?, raided=raided+? WHERE id=?",
+                  (off, deff, raided, player_id))
 
 
 # --- Points de culture (expansion) ------------------------------------------

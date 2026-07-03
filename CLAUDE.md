@@ -192,6 +192,24 @@ Phase 3 en cours (livrée incrémentalement) :
   bâtiments visables, `CATA_TARGET_BUILDINGS`) si le village abrite des catapultes. UI : sélecteur(s)
   « 🎯 Catapultes — cible(s) » dans les deux formulaires d'envoi (rassemblement & carte, village
   uniquement), récap « 🧱/💥 avant→après » dans les rapports.
+- ✅ **Espionnage / reconnaissance** (`app/engine/scouting.py`, verrouillé par
+  `tests/test_scouting.py`) : mission `kind="scout"` (`movement.send`/`_resolve_scout`)
+  n'embarquant **que des éclaireurs** (`is_scout`), vers un **village** uniquement, sans
+  héros/butin/siège. Deux modes (`scout_mode`) : **"res"** (ressources présentes + part
+  protégée par la cachette + troupes) ou **"def"** (muraille, résidence/palais, place de
+  rassemblement + troupes). Combat de reconnaissance : puissance = **20/éclaireur**
+  (améliorée par la forge comme le combat), moral côté attaquant, **muraille** côté
+  défenseur ; l'attaquant ne **perd** d'éclaireurs **que si** la cible en abrite
+  (« détecté ») — un défenseur **sans** éclaireur n'est **pas prévenu** ; défense **≥**
+  attaque ⇒ éclaireurs **anéantis** (aucune info, défenseur notifié `vu=False`). Survivants
+  rentrent à vide. **Cachette** : `village.cranny_protection` (×2 Gaulois) alimente le
+  rapport (pas encore le butin — à raffiner, cf. combat). ⚠️ **Kirilloid muet** → valeur
+  20/éclaireur, exposant d'immensité et absence de fossé (water ditch) = **approximations
+  documentées** recoupées **support.travian.com « Troop Actions: Scouting »** / wiki Fandom
+  « Scouts » / **TravianZ** `GameEngine/Battle.php` (cf. en-tête `scouting.py`). API :
+  `SendArmy.kind="scout"` + `scout_mode` ; UI : option « 🔍 Espionnage » + sélecteur de mode
+  dans les deux formulaires d'envoi (rassemblement & carte, village), rapports `scout_off`/
+  `scout_def`.
 - ✅ **Conquête de village (loyauté + chefs)** (`app/engine/conquest.py`, verrouillé par
   `tests/test_conquest.py`) : chaque village a une **loyauté** 0..100 (`Village.loyalty`,
   persistée) qui **régénère** paresseusement dans `village._accumulate` (+⅔ × niveau du
@@ -255,6 +273,22 @@ Phase 3 en cours (livrée incrémentalement) :
   rétrogradée et ses **champs > 10 ramenés à 10** (sans remboursement, fidèle). API
   `POST /api/village/{id}/make-capital` (+ `is_capital`/`can_make_capital` exposés par `serialize`) ;
   UI : panneau « Capitale » dans la modale du palais.
+- ✅ **Démolition de bâtiments** (`village.enqueue_demolish`/`Village.demolition`, verrouillé par
+  `tests/test_buildings.test_demolish`) — fidélité recoupée **support.travian.com « Demolishing
+  Buildings »** / unofficialtravian / wiki Fandom « Demolition » (kirilloid muet : il ne modélise
+  que la construction) : le **bâtiment principal niveau 10** débloque la démolition ; on rase un
+  bâtiment **un niveau à la fois** jusqu'au niveau 0 (= destruction ⇒ **emplacement libéré**,
+  `del v.slots[...]`), une seule démolition à la fois par village, **indépendante** de la file de
+  construction. **Aucun remboursement** (seuls l'entretien/population sont libérés). Non
+  démolissables : **champs de ressources**, **bâtiment principal** (qui fournit la fonction) et
+  **place de rassemblement**. Événement `"demolish"` appliqué paresseusement dans `tick`.
+  ⚠️ **Durée = approximation documentée** (valeur exacte non publiée ; les sources disent « comme
+  la construction, selon le niveau du bâtiment principal ») → temps de construction du niveau retiré
+  (`demolish_time` = Σ `build_time`, réduction BP + vitesse serveur incluses). API
+  `POST /api/village/{id}/demolish/{slot}[?target_level=N]` (N omis ⇒ un niveau ; 0 ⇒ destruction) ;
+  `serialize` expose par emplacement `can_demolish` + `demolish_finish_in`/`demolish_target`. UI :
+  bouton « 🏚️ Démolir » (avec sélecteur de niveau cible) dans la modale du bâtiment + indicateur
+  🏚️ sur la tuile et dans le bandeau des chantiers en cours.
 - ⬜ **Combat héros — affinages** : pas encore de monture→cavalerie en combat, ni de prise en
   compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.
 
@@ -342,8 +376,18 @@ Par ordre de rentabilité recommandé :
      retirer, razzia groupée). ⚠️ Simplification : **une liste par village** (pas de listes nommées
      multiples) ; cibles oasis ajoutables via l'API (l'UI rally ajoute les cibles village).
    - ⬜ **Messagerie joueur-à-joueur** (`Message.php` ; on a les rapports, pas les MP).
-   - ⬜ **Classements/statistiques** (`Ranking.php`), NPC trader / bourse du marché (périmètre à
-     décider), médailles, protection débutant.
+   - ✅ **Classements/statistiques** (`app/engine/ranking.py`, verrouillé par `tests/test_ranking.py`) :
+     onglet 🏆 Classement listant les joueurs par **population** (somme des pop. de villages,
+     calculée), **points d'attaque**, **points de défense**, **ressources pillées** (compteurs
+     cumulés sur `players.off_points/def_points/raided`, migration douce) et **nombre de villages**.
+     Suivi branché dans `movement._resolve_battle`/`_resolve_oasis` via `ranking.credit_battle` :
+     **points = upkeep (consommation de céréales) des troupes ennemies tuées** (attaquant ↔
+     défenseurs tués, défenseur ↔ assaillants tués), pillage crédité à l'attaquant. La **Nature**
+     (animaux d'oasis) crédite l'attaquant mais n'est pas classée (pas de joueur). ⚠️ **Kirilloid
+     muet** → mécanique = **TravianZ `Ranking.php`**, chiffres recoupés support.travian.com
+     « Statistics » / wiki Fandom « Ranking » (règle upkeep=points, documentée en tête de
+     `ranking.py`). API `/api/ranking` ; UI : onglet avec sélecteur de catégorie (médailles 🥇🥈🥉,
+     joueur courant surligné). NPC trader / bourse du marché, médailles, protection débutant : à venir.
 6. ✅ **Bâtiments spéciaux jadis INERTES — câblés** (verrouillés par `tests/test_special_buildings.py`).
    Chiffres recoupés **support.travian.com / unofficialtravian** (kirilloid muet) ; cf. commentaires
    dans `buildings.py` / `movement.py` / `village.py` / `brewery.py` :

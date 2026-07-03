@@ -32,6 +32,7 @@ from app.engine import farmlist as FARM
 from app.engine import capital as CAP
 from app.engine import natars as NAT
 from app.engine import artifacts as ART
+from app.engine import ranking as RK
 from app.data import items as IT
 
 app = FastAPI(title="Travian local — T4.6")
@@ -242,6 +243,7 @@ def serialize(v: V.Village) -> dict:
         if s is not None:
             b = BLD.get(s.building_id)
             order = next((o for o in v.queue if o.slot_index == idx), None)
+            dem = v.demolition if (v.demolition and v.demolition.slot_index == idx) else None
             mx = V.effective_max_level(v, b)  # champs hors capitale plafonnés à 10
             slots.append({
                 "index": idx, "empty": False,
@@ -251,6 +253,13 @@ def serialize(v: V.Village) -> dict:
                 "next_time": round(V.build_time(v, b, s.level + 1)) if s.level < mx else None,
                 "finish_in": round(order.finish_at - now) if order else None,
                 "target_level": order.target_level if order else None,
+                # Démolition (bâtiment principal niv 10+) : possibilité + démolition en cours.
+                # False si une démolition tourne déjà (une seule à la fois) ou si l'emplacement
+                # est en construction.
+                "can_demolish": (V.can_demolish(v) and V.is_demolishable_slot(v, idx)
+                                 and order is None and v.demolition is None),
+                "demolish_finish_in": round(dem.finish_at - now) if dem else None,
+                "demolish_target": dem.target_level if dem else None,
                 "effect": EFF.building_effect(v, s.building_id, s.level),
                 "next_effect": (EFF.building_effect(v, s.building_id, s.level + 1)
                                 if s.level < mx else None),
@@ -383,13 +392,14 @@ def _get(village_id: int) -> V.Village:
 
 
 class SendArmy(BaseModel):
-    kind: str  # attack | raid | reinforce
+    kind: str  # attack | raid | reinforce | scout
     units: list[int]
     target_id: int | None = None       # cible village
     target_x: int | None = None        # cible oasis (coordonnées)
     target_y: int | None = None
     with_hero: bool = False            # embarquer le héros (attaque/razzia)
     targets: list[int] | None = None   # siège : ids de bâtiments visés (catapultes)
+    scout_mode: str | None = None      # espionnage : "res" (ressources) | "def" (défenses)
 
 
 @app.get("/api/villages")
@@ -506,6 +516,21 @@ def construct(village_id: int, slot_index: int, building_id: int):
         order = V.enqueue_new_building(
             v, slot_index, building_id,
             account_has_palace=_account_has_palace(v.player_id, v.id))
+    except V.BuildError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "finish_in": round(order.finish_at - time.time()),
+            "village": serialize(v)}
+
+
+@app.post("/api/village/{village_id}/demolish/{slot_index}")
+def demolish(village_id: int, slot_index: int, target_level: int | None = None):
+    """Démolit l'emplacement `slot_index` (bâtiment principal niv 10+). `target_level`
+    optionnel : niveau visé (omis ⇒ un seul niveau ; 0 ⇒ destruction complète)."""
+    v = _get(village_id)
+    if v.player_id != HUMAN_PLAYER_ID:
+        raise HTTPException(status_code=403, detail="Ce village ne t'appartient pas.")
+    try:
+        order = V.enqueue_demolish(v, slot_index, target_level)
     except V.BuildError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "finish_in": round(order.finish_at - time.time()),
@@ -715,7 +740,7 @@ def build_traps(village_id: int, count: int):
 
 @app.post("/api/village/{village_id}/send")
 def send_army(village_id: int, body: SendArmy):
-    if body.kind not in ("attack", "raid", "reinforce"):
+    if body.kind not in ("attack", "raid", "reinforce", "scout"):
         raise HTTPException(status_code=400, detail="Type d'ordre invalide.")
     if body.target_id is None and (body.target_x is None or body.target_y is None):
         raise HTTPException(status_code=400, detail="Cible manquante.")
@@ -723,7 +748,8 @@ def send_army(village_id: int, body: SendArmy):
     try:
         info = M.send(village_id, body.target_id, HUMAN_PLAYER_ID, body.kind, units,
                       target_x=body.target_x, target_y=body.target_y,
-                      with_hero=body.with_hero, targets=body.targets)
+                      with_hero=body.with_hero, targets=body.targets,
+                      scout_mode=body.scout_mode)
     except M.MoveError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "arrive_in": info["arrive_in"], "village": serialize(_get(village_id))}
@@ -1046,6 +1072,15 @@ def abandon_oasis(village_id: int, body: OasisTarget):
     except OAS.OasisError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "village": serialize(_get(village_id))}
+
+
+@app.get("/api/ranking")
+def ranking():
+    """Classement des joueurs par population, points d'attaque/défense, ressources
+    pillées et nombre de villages (cf. engine.ranking)."""
+    now = time.time()
+    M.process_due(now)
+    return RK.rankings(HUMAN_PLAYER_ID)
 
 
 @app.get("/api/reports")

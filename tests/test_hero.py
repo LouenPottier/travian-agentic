@@ -120,6 +120,49 @@ def test_items():
           f"bandage +25 santé")
 
 
+def test_revive_delay_no_double_charge():
+    """Résurrection : coût prélevé une fois, délai en cours ⇒ re-clic refusé
+    (sinon on repaie et on remet le compte à rebours à zéro : le héros semble
+    « ne jamais ressusciter »). Puis, le délai échu, il repasse « home »."""
+    fresh()
+    pid = store.create_player("Toi", Tribe.GAULS)
+    v = V.new_village("Cap", Tribe.GAULS, server_speed=100, x=0, y=0, player_id=pid)
+    v.slots[22] = V.Slot(building_id=B.HERO_MANSION, level=1)
+    v.slots[20] = V.Slot(building_id=B.WAREHOUSE, level=10)
+    v.slots[21] = V.Slot(building_id=B.GRANARY, level=10)
+    v.resources = [5000.0] * 4
+    now = time.time()
+    v = store.insert_village(v)
+    h = H.get_or_create(pid, v.id, now)
+    h.health = 0.0
+    h.status = "dead"
+    H.save(h)
+
+    info = H.revive(pid, now)
+    assert info["revive_in"] > 0
+    v2 = store.load_village(v.id)
+    paid = [round(5000.0 - v2.resources[i]) for i in range(4)]
+    assert paid == list(H.REVIVE_COST), paid
+    assert H.load(pid).status == "dead", "toujours mort pendant le délai"
+
+    # Re-clic pendant le délai → refusé, aucune ressource prélevée de plus.
+    try:
+        H.revive(pid, now + 1)
+        assert False, "un second appel doit être refusé"
+    except H.HeroError:
+        pass
+    v3 = store.load_village(v.id)
+    assert [round(x, 3) for x in v3.resources] == [round(x, 3) for x in v2.resources], \
+        "pas de double prélèvement"
+
+    # Délai échu → le tick ressuscite (santé pleine, statut home).
+    h = H.load(pid)
+    home = store.load_village(v.id)
+    H.tick(h, home, now + info["revive_in"] + 1)
+    assert h.status == "home" and h.health == H.MAX_HEALTH, (h.status, h.health)
+    print(f"✅ résurrection : coût {H.REVIVE_COST} prélevé une fois, délai {info['revive_in']}s, puis home")
+
+
 def test_hero_in_combat():
     fresh()
     pid = store.create_player("A", Tribe.GAULS)
