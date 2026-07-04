@@ -1140,7 +1140,7 @@ def artifacts_state():
     now = time.time()
     M.process_due(now)
     owned = ART.owned_status(acting_player()) if acting_player() is not None else []
-    return {"owned": owned, "map": ART.map_status()}
+    return {"owned": owned, "map": ART.map_status(), "catalogue": ART.catalogue()}
 
 
 class Settle(BaseModel):

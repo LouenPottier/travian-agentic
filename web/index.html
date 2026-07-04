@@ -754,8 +754,20 @@ async function loadTreasuryPanel(P){
       h+=secTitle("À conquérir (villages Natars)");
       h+=d.map.map(a=>`<div class="cost">🏯 <b>${a.label}</b> en (${a.x}|${a.y}) — ${a.desc}</div>`).join("");
     }
+    if(d.catalogue&&d.catalogue.length){
+      h+=secTitle("Catalogue des effets");
+      h+=d.catalogue.map(c=>{
+        // Portée fidèle : petit = 1 village · grand = compte · unique = compte (plus fort).
+        // Magnitude chiffrée (× …) seulement si `numeric` (sinon effet non chiffrable/publié).
+        const m=c.mag;
+        const mags=c.numeric?` · petit ×${m.small} · grand ×${m.large} · unique ×${m.unique}`:"";
+        return `<div class="cost">✨ <b>${c.name}</b> — ${c.desc}`
+          +`<div style="opacity:.6">portée : petit = village · grand/unique = compte${mags}`
+          +`${c.wired?"":" · <span style='opacity:.7'>[effet à venir]</span>"}</div></div>`;
+      }).join("");
+    }
   }
-  h+=`<div class="cost" style="opacity:.6;margin-top:6px">Capture : remporte une <b>attaque</b> (pas razzia) avec ton <b>héros</b> contre un village 🏯 Natar détenant un artefact, en ayant ici une trésorerie <b>vide</b> de niveau suffisant.</div>`;
+  h+=`<div class="cost" style="opacity:.6;margin-top:6px">Capture : <b>détruis la trésorerie</b> (catapultes) du village 🏯 Natar détenteur puis remporte une <b>attaque</b> (pas razzia) avec ton <b>héros</b> survivant, en ayant ici une trésorerie <b>vide</b> de niveau suffisant (10 petit / 20 grand·unique).</div>`;
   P.innerHTML=h;
 }
 

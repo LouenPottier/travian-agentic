@@ -383,17 +383,34 @@ Par ordre de rentabilité recommandé :
      le centre donc fortement gardés ; seeding idempotent `_ensure_artifacts`). **Capture
      par le héros** (`try_capture`, branché dans `movement._resolve_battle`) : **attaque
      normale** (jamais razzia) menée par le **héros présent & survivant**, **garnison
-     vaincue** (défenseurs à 0), **et** une **trésorerie vide** assez haute au **village
+     vaincue** (défenseurs à 0), **trésorerie du village-artefact détruite** (catapultes,
+     `treasury_level(target)==0`) — les villages-artefact Natars ont une trésorerie **niv 20
+     dans tous les cas** (même petit artefact ⇒ ~55 catapultes ; vrai T4.6, support.travian.com /
+     unofficialtravian « Artefacts »), **et** une **trésorerie vide** assez haute au **village
      d'origine** (`can_store` : niv **10** = petit / **20** = grand·unique, cf.
      `formulas.slots2`) ⇒ l'artefact passe en `holder='player'`, stocké dans cette
      trésorerie. **Effets branchés** (petit → son village ; grand/unique → tout le
-     compte) : **durabilité des bâtiments** (architecte ×3/4/5, multiplie
+     compte) — **magnitudes officielles recoupées** (support.travian.com « Artefact
+     Effects » / wiki Fandom ; le **petit** est le plus fort car concentré sur un village) :
+     **durabilité des bâtiments** (architecte **petit ×4 / grand ×3 / unique ×5**, multiplie
      `place.dur_bonus`/`wall_durability` dans `_build_place`), **vitesse des troupes**
-     (bottes ×1,5/2, divise le trajet **aller** dans `movement.send`), **consommation de
-     céréales** (diète ×0,5, dans `village.troop_upkeep`). Les **5 autres effets**
-     (entraînement, stockage, cachette, espionnage, confusion) sont **catalogués mais pas
-     encore actifs** (`wired=False`, comme les bonus d'alliance à venir). Un **village
-     conquis détache** ses artefacts (inactifs, `release_artifacts_of_village`). API
+     (bottes **petit ×2 / grand ×1,5 / unique ×2**, divise le trajet **aller** dans
+     `movement.send`), **consommation de céréales** (diète **petit ×0,5 / grand ×0,75 /
+     unique ×0,5**, dans `village.troop_upkeep`) et **grand entrepôt/grenier**
+     (bâtisseur : `artifacts.great_storage_allowed` **débloque** la construction de
+     `GREAT_WAREHOUSE`/`GREAT_GRANARY` dans `village.available_buildings` — petit = son
+     village, grand/unique = tout le compte ; vrai T4.6, support.travian.com « Artefact
+     Effects »), **temps d'entraînement** (entraîneur `training_multiplier` dans
+     `village.enqueue_training` ; magnitude non publiée ⇒ approximation ×0,5/0,66/0,5,
+     `numeric=False`), **capacité des cachettes** (cartographe `cranny_multiplier` ×200/100/500
+     dans `village.cranny_protection`), **espionnage** (œil de l'aigle `spy_multiplier` ×5/3/10
+     sur la puissance de reconnaissance att. **et** déf. dans `movement._resolve_scout`) et
+     **artefact du fou** (`data.artifacts.fool_current` : prend un des 6 effets chiffrables
+     **au sort** par fenêtre de 24 h de jeu, déterministe par id×fenêtre, résolu dans
+     `artifacts._resolve` ⇒ un seul effet actif à la fois ; ⚠️ simplifications documentées :
+     **positif seulement** et **portée figée** à sa taille). Le fou exclut « grand entrepôt »
+     et lui-même (règle officielle). **Tous les 8 effets sont désormais `wired=True`.** Un
+     **village conquis détache** ses artefacts (inactifs, `release_artifacts_of_village`). API
      `/api/artifacts` (owned + carte) + `treasury` exposé par `serialize` ; UI : panneau
      « Trésorerie — artefacts » (modale trésorerie) + récap de capture dans le rapport
      offensif. ⚠️ **Kirilloid muet** → catalogue, magnitudes et seuils = **approximations

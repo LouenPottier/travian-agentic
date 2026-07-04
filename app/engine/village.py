@@ -305,7 +305,11 @@ def cranny_protection(v: Village) -> int:
     rapports d'espionnage ; le butin ne l'exploite pas encore (cf. combat, à raffiner)."""
     total = sum(F.cranny(s.level) for s in v.slots.values()
                 if s.building_id == B.CRANNY and s.level > 0)
-    return total * 2 if v.tribe == Tribe.GAULS else total
+    total = total * 2 if v.tribe == Tribe.GAULS else total
+    # Artefact du cartographe (storage `cranny`) : ×200/100/500 la capacité. Import
+    # paresseux (artifacts importe village → éviter le cycle).
+    from app.engine import artifacts as ART
+    return round(total * ART.cranny_multiplier(v))
 
 
 def capacities(v: Village) -> list[int]:
@@ -740,6 +744,13 @@ def available_buildings(v: Village, slot_index: int,
             continue
         if b.id == B.RESIDENCE and B.PALACE in present:
             continue
+        # Grand entrepôt / grand grenier : débloqués par l'artefact du bâtisseur (storage)
+        # applicable à ce village (cf. artifacts.great_storage_allowed, vrai T4.6). Import
+        # paresseux (artifacts importe village → éviter le cycle).
+        if b.id in (B.GREAT_WAREHOUSE, B.GREAT_GRANARY):
+            from app.engine import artifacts as ART
+            if not ART.great_storage_allowed(v):
+                continue
         if any(levels.get(bid, 0) < lvl for bid, lvl in b.reqs.items()):
             continue
         out.append(b)
@@ -898,6 +909,9 @@ def enqueue_training(v: Village, building_id: int, unit_index: int, count: int,
     per_unit = unit.train_time * train_time_factor(building_id, level) / v.server_speed
     if not unit.infantry:  # abreuvoir romain : −1 %/niveau sur la cavalerie
         per_unit *= horse_pool_train_factor(v)
+    # Artefact de l'entraîneur (`training`) : réduit le temps d'entraînement (facteur <1).
+    from app.engine import artifacts as ART
+    per_unit *= ART.training_multiplier(v)
     free = _building_free_at(v, building_id, now)
     order = TrainOrder(building_id=building_id, unit_index=unit_index,
                        remaining=count, per_unit=per_unit, next_finish=free + per_unit)

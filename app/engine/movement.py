@@ -708,10 +708,15 @@ def _resolve_scout(origin, target, units, mode, now):
     # (gros village attaquant ⇒ malus, comme au combat).
     off_power = SC.scout_power(origin.tribe, units, origin.upgrades)
     off_power *= C.morale(V.population(origin), V.population(target))
+    # Artefact « Œil de l'aigle » (`spy`) : ×5/3/10 l'efficacité des éclaireurs, en
+    # **attaque** (village d'origine) comme en **défense** (cible). Cf. engine.artifacts.
+    from app.engine import artifacts as ART
+    off_power *= ART.spy_multiplier(origin)
     # Puissance défensive : éclaireurs de la cible (renforts inclus, fusionnés dans
     # troops) améliorés (forge), renforcés par la muraille.
     def_power = SC.scout_power(target.tribe, target.troops, target.upgrades)
     def_power *= 1 + SC.wall_def_bonus(target)
+    def_power *= ART.spy_multiplier(target)
     n_def = SC.scout_count(target.tribe, target.troops)
 
     off_loss, def_loss, detected = SC.resolve_losses(off_power, def_power, n_off, n_def)

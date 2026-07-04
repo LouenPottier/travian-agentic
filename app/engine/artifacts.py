@@ -5,10 +5,17 @@ Mécanique fidèle (recoupée doc officielle / wiki — kirilloid muet, cf. data
 - **Détention** : des villages Natars dédiés détiennent les artefacts (table `artifacts`,
   `holder='natar'`). Ils restent attaquables/pillables comme les autres Natars, mais
   **non conquérables** (garde-fou `conquest.conquer_eligible` sur les PNJ).
-- **Capture** : remporter une **attaque normale** (pas razzia) menée par le **héros**
-  (présent et survivant) contre un village-artefact, et **vaincre la garnison** (défenseurs
-  réduits à 0). Il faut en plus une **trésorerie assez grande et vide** pour le stocker
-  (vrai T4.6 : « emplacements de trésor », support.travian.com) :
+- **Capture** (vrai T4.6, recoupé support.travian.com « Artefacts » /
+  unofficialtravian « How to get ready for the Artefact release » / wiki Fandom
+  « Artifacts ») : *voler* un artefact =
+    1. **détruire la trésorerie** du village-artefact (les villages-artefact Natars ont
+       une trésorerie **niveau 20** dans TOUS les cas, même pour un petit artefact ⇒
+       ~55 catapultes pour la raser) ; ET
+    2. remporter une **attaque normale** (pas razzia) menée par le **héros** (présent et
+       survivant) contre ce village, en **vainquant la garnison** (défenseurs réduits à 0).
+  La vague de catapultes qui détruit la trésorerie et la vague du héros peuvent être la
+  **même attaque**. Il faut en plus une **trésorerie assez grande et vide** pour stocker
+  l'artefact capturé (vrai T4.6 : « emplacements de trésor », support.travian.com) :
     - **petit** artefact → trésorerie **niveau ≥ 10** (1 emplacement, `formulas.slots2`) ;
     - **grand / unique** → trésorerie **niveau ≥ 20** (2 emplacements).
   ⚠️ **Simplification documentée** : on exige la trésorerie **du village d'origine** de
@@ -16,12 +23,15 @@ Mécanique fidèle (recoupée doc officielle / wiki — kirilloid muet, cf. data
   stocker dans n'importe quel village au siège suffisant. Suffisant pour le modèle local.
 - **Effets** (cf. `data.artifacts` pour les magnitudes & sources) : un **petit** artefact
   n'agit que dans **son** village de stockage ; un **grand/unique** agit sur **tout le
-  compte**. Branchés pour l'instant : **durabilité des bâtiments** (siège), **vitesse des
-  troupes** (trajet), **consommation de céréales**. Les autres effets sont catalogués mais
-  pas encore actifs (cf. data.artifacts, `wired`).
+  compte**. **Tous branchés** : **durabilité des bâtiments** (siège), **vitesse des troupes**
+  (trajet), **consommation de céréales** (entretien), **grand entrepôt/grenier** (déblocage
+  de construction), **temps d'entraînement**, **capacité des cachettes**, **espionnage**
+  (puissance de reconnaissance att./déf.), et l'**artefact du fou** (prend un effet aléatoire
+  par fenêtre de 24 h, cf. `data.artifacts.fool_current`).
 """
 from __future__ import annotations
 
+import sqlite3
 import time as _time
 
 from app import store
@@ -52,45 +62,91 @@ def can_store(v: V.Village, size: str) -> bool:
 
 
 # --- Effets : agrégation par village / compte --------------------------------
-def _applicable(village: V.Village, effect: str) -> list[dict]:
-    """Artefacts du propriétaire de `village` qui s'appliquent ici pour cet effet :
-    les **petits** seulement s'ils sont stockés dans CE village, les **grands/uniques**
-    partout (effet de compte)."""
+def _resolve(a: dict, now: float, server_speed: int) -> tuple[str, float, str]:
+    """(effet, magnitude, taille) effectifs d'un artefact. Cas normal = son effet fixe ;
+    l'**artefact du fou** tire son effet + sa magnitude toutes les 24 h (cf. `fool_current`)."""
+    t = AT.get(a["kind"])
+    if t.effect != "fool":
+        return t.effect, t.mag[a["size"]], a["size"]
+    effect, mag = AT.fool_current(a["id"], a["size"], now, server_speed)
+    return effect, mag, a["size"]
+
+
+def _magnitudes(village: V.Village, effect: str, now: float | None = None) -> list[float]:
+    """Magnitudes effectives de `effect` pour `village` (résout le fou) : les **petits**
+    seulement s'ils sont stockés dans CE village, les **grands/uniques** partout (compte)."""
+    if village.player_id is None:
+        return []
+    now = now if now is not None else _time.time()
+    # Tolérant à une base sans table `artifacts` (monde non semé / tests en mémoire) :
+    # pas de table ⇒ aucun artefact ⇒ effet neutre (aucun multiplicateur).
+    try:
+        owned = store.artifacts_owned_by(village.player_id)
+    except sqlite3.OperationalError:
+        return []
     out = []
-    for a in store.artifacts_owned_by(village.player_id):
+    for a in owned:
         if a["village_id"] is None:           # artefact détaché (village conquis) : inactif
             continue
-        if AT.get(a["kind"]).effect != effect:
+        eff, mag, size = _resolve(a, now, village.server_speed)
+        if eff != effect:
             continue
-        if a["size"] == "small" and a["village_id"] != village.id:
+        if size == "small" and a["village_id"] != village.id:
             continue
-        out.append(a)
+        out.append(mag)
     return out
 
 
-def _factor(village: V.Village, effect: str, neutral: float, better) -> float:
+def _factor(village: V.Village, effect: str, neutral: float, better,
+            now: float | None = None) -> float:
     """Magnitude effective d'un effet pour `village` (neutre si aucun artefact).
-    `better` = max (multiplicateurs : plus haut = mieux) ou min (consommation)."""
-    vals = [AT.magnitude(a["kind"], a["size"]) for a in _applicable(village, effect)]
+    `better` = max (multiplicateurs : plus haut = mieux) ou min (consommation/temps)."""
+    vals = _magnitudes(village, effect, now)
     if not vals:
         return neutral
-    return better([neutral, *vals]) if better is min else better(vals)
+    return better([neutral, *vals])
 
 
-def durability_multiplier(village: V.Village) -> float:
+def durability_multiplier(village: V.Village, now: float | None = None) -> float:
     """Multiplicateur de durabilité des bâtiments (siège) accordé par l'artefact de
     l'architecte. 1,0 sinon. S'ajoute (multiplicativement) au tailleur de pierre."""
-    return _factor(village, "durability", 1.0, max)
+    return _factor(village, "durability", 1.0, max, now)
 
 
-def crop_multiplier(village: V.Village) -> float:
+def crop_multiplier(village: V.Village, now: float | None = None) -> float:
     """Facteur de consommation de céréales des troupes (diète) : ×0,5 si actif, 1,0 sinon."""
-    return _factor(village, "crop", 1.0, min)
+    return _factor(village, "crop", 1.0, min, now)
 
 
-def speed_multiplier(village: V.Village) -> float:
+def speed_multiplier(village: V.Village, now: float | None = None) -> float:
     """Multiplicateur de vitesse des troupes partant de ce village (bottes ailées)."""
-    return _factor(village, "speed", 1.0, max)
+    return _factor(village, "speed", 1.0, max, now)
+
+
+def cranny_multiplier(village: V.Village, now: float | None = None) -> float:
+    """Multiplicateur de capacité des cachettes (cartographe) : ×200/100/500, 1,0 sinon."""
+    return _factor(village, "cranny", 1.0, max, now)
+
+
+def spy_multiplier(village: V.Village, now: float | None = None) -> float:
+    """Multiplicateur d'efficacité des éclaireurs (œil de l'aigle) : ×5/3/10, 1,0 sinon.
+    Appliqué à la puissance de reconnaissance (attaque comme défense)."""
+    return _factor(village, "spy", 1.0, max, now)
+
+
+def training_multiplier(village: V.Village, now: float | None = None) -> float:
+    """Facteur de temps d'entraînement des troupes (entraîneur) : <1 si actif, 1,0 sinon."""
+    return _factor(village, "training", 1.0, min, now)
+
+
+def great_storage_allowed(village: V.Village) -> bool:
+    """Le grand entrepôt / grand grenier n'est constructible que si le joueur détient
+    l'artefact du bâtisseur (`storage`) applicable ici (vrai T4.6 : cet artefact **débloque**
+    la construction du grand entrepôt/grenier ; support.travian.com « Artefact Effects »).
+    Petit ⇒ seulement dans le village de stockage ; grand/unique ⇒ tout le compte."""
+    if village.player_id is None:
+        return False
+    return bool(_magnitudes(village, "storage"))
 
 
 # --- Capture -----------------------------------------------------------------
@@ -112,6 +168,12 @@ def try_capture(origin: V.Village, target: V.Village, att_hero, hero_alive: bool
         return {"captured": False, "artefact": label, "raison": "héros requis"}
     if not hero_alive or not won:
         return {"captured": False, "artefact": label, "raison": "victoire du héros requise"}
+    # Fidélité vrai T4.6 : la trésorerie du village-artefact doit être **détruite**
+    # (catapultes) pour libérer l'artefact. Les slots de `target` sont déjà mutés par le
+    # siège au moment de cet appel (cf. movement._resolve_battle). Cf. en-tête.
+    if treasury_level(target) > 0:
+        return {"captured": False, "artefact": label,
+                "raison": "trésorerie du village-artefact à détruire (catapultes)"}
     if not can_store(origin, art["size"]):
         need = required_treasury(art["size"])
         return {"captured": False, "artefact": label,
@@ -164,6 +226,20 @@ def treasury_status(v: V.Village) -> dict:
     }
 
 
+def catalogue() -> list[dict]:
+    """Descriptif des 8 types d'artefacts (référence pour la modale trésorerie) :
+    effet, portée (petit = village / grand·unique = compte) et magnitude par taille."""
+    out = []
+    for kind in sorted(AT.TYPES):
+        t = AT.get(kind)
+        out.append({
+            "kind": kind, "name": t.name, "effect": t.effect,
+            "desc": t.desc, "wired": t.wired, "numeric": t.numeric,
+            "mag": {s: t.mag[s] for s in AT.SIZES},
+        })
+    return out
+
+
 # --- Spawn : villages Natars détenteurs d'artefacts --------------------------
 # Plan déterministe : 8 artefacts (un par type), tailles variées. Les villages
 # détenteurs sont placés **vers le centre** (zone Natar interne), donc fortement
@@ -199,9 +275,11 @@ def spawn_artifact_villages(player_id: int, server_speed: int) -> list:
         layout = tile["layout"] if tile else "4-4-4-6"
         v = NAT._natar_village(f"Trésor natar {i + 1:02d}", x, y, player_id,
                                server_speed, layout)
-        # Trésorerie « pleine » sur le village détenteur (flavour : il garde l'artefact).
-        tre_level = TREASURY_BIG if size != "small" else TREASURY_SMALL
-        v.slots[22] = V.Slot(building_id=B.TREASURY, level=tre_level)
+        # Trésorerie sur le village détenteur (il garde l'artefact). Vrai T4.6 : les
+        # villages-artefact Natars ont une trésorerie **niveau 20 dans tous les cas**,
+        # même pour un petit artefact — il faut la raser (catapultes) pour voler l'artefact
+        # (cf. try_capture, support.travian.com / unofficialtravian « Artefacts »).
+        v.slots[22] = V.Slot(building_id=B.TREASURY, level=TREASURY_BIG)
         v = store.insert_village(v)
         store.insert_artifact(kind, size, v.id)
         created.append(v)
