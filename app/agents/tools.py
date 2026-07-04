@@ -14,6 +14,7 @@ Les erreurs 400/403 des endpoints sont renvoyées telles quelles à l'agent (tex
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 from typing import Any
@@ -24,6 +25,18 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 # Base du serveur local (le process uvicorn lui-même). Configurable pour les tests.
 BASE_URL = os.environ.get("TRAVIAN_BASE_URL", "http://127.0.0.1:8000")
+
+# Joueur agissant de la session courante (Phase 4). Posé par le défenseur / l'exécuteur
+# `playbook` (et éventuellement une macro) pour agir AU NOM d'un autre compte via
+# l'en-tête `X-Acting-Player`. Absent (None) ⇒ pas d'en-tête ⇒ le serveur retombe sur
+# `HUMAN_PLAYER_ID` (comportement historique de la macro humaine, inchangé).
+_ACTING: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "tools_acting_player", default=None)
+
+
+def set_acting_player(pid: int | None) -> None:
+    """Fixe (ou efface avec None) le joueur agissant de la session/tâche courante."""
+    _ACTING.set(pid)
 
 # Un `wait` ne peut pas dormir indéfiniment : borne par appel (le garde-fou de durée
 # totale vit dans macro.py). En vitesse ×100 la plupart des chantiers durent quelques
@@ -44,8 +57,11 @@ async def _http() -> httpx.AsyncClient:
 async def _req(method: str, path: str, *, json_body: Any | None = None,
                params: dict | None = None) -> str:
     """Appelle l'endpoint et renvoie un texte compact (état JSON ou « ERREUR : … »)."""
+    pid = _ACTING.get()
+    headers = {"X-Acting-Player": str(pid)} if pid is not None else None
     try:
-        r = await (await _http()).request(method, path, json=json_body, params=params)
+        r = await (await _http()).request(method, path, json=json_body, params=params,
+                                          headers=headers)
     except httpx.HTTPError as e:  # serveur injoignable, timeout…
         return f"ERREUR RÉSEAU : {e}"
     if r.status_code >= 400:
@@ -101,6 +117,26 @@ async def get_hero(_args: dict[str, Any]) -> dict[str, Any]:
     return _ok(await _req("GET", "/api/hero"))
 
 
+@tool("get_situation", "Digest COMPACT de tout ton compte (défense) : menaces entrantes "
+      "(kind/ETA/effectif, composition inconnue comme dans l'UI), nouveaux rapports, et "
+      "résumé terse par village (ressources/prod, mur, pièges, loyauté, troupes, file). "
+      "Point de départ du défenseur — bien plus léger que get_state.", {})
+async def get_situation(_args: dict[str, Any]) -> dict[str, Any]:
+    return _ok(await _req("GET", "/api/agent/situation"))
+
+
+@tool("get_reports", "Tes derniers rapports (combats subis, espionnage détecté, renforts "
+      "reçus…). Indispensable pour savoir ce qui vient de t'arriver.", {})
+async def get_reports(_args: dict[str, Any]) -> dict[str, Any]:
+    return _ok(await _req("GET", "/api/reports"))
+
+
+@tool("get_trapper", "État du trappeur (gaulois) d'un village : capacité, pièges "
+      "construits/en cours/libres, prisonniers retenus.", {"village_id": int})
+async def get_trapper(args: dict[str, Any]) -> dict[str, Any]:
+    return _ok(await _req("GET", f"/api/village/{args['village_id']}/trapper"))
+
+
 @tool("academy_info", "Académie d'un village : unités recherchables (coût/temps), déjà "
       "recherchées, en cours de recherche.", {"village_id": int})
 async def academy_info(args: dict[str, Any]) -> dict[str, Any]:
@@ -128,22 +164,33 @@ async def expansion_info(_args: dict[str, Any]) -> dict[str, Any]:
 
 # --- Actions : bâtiments / champs ---------------------------------------------------
 
-@tool("build", "Améliore d'UN niveau le bâtiment/champ à l'emplacement `slot_index` d'un "
-      "village (met en file de construction, consomme les ressources). Utilise get_state "
-      "pour connaître les emplacements et leur coût.",
+@tool("build", "Enfile la montée d'UN niveau du bâtiment/champ à l'emplacement `slot_index`. "
+      "File **illimitée** : l'ordre démarre dès qu'un créneau se libère ET que les "
+      "ressources sont là (payées **au démarrage**, pas à la mise en file). Répète l'appel "
+      "pour enfiler plusieurs niveaux du même emplacement. `get_state` liste la file "
+      "(`build_plan`) et le niveau projeté.",
       {"village_id": int, "slot_index": int})
 async def build(args: dict[str, Any]) -> dict[str, Any]:
     return _ok(await _req("POST", f"/api/village/{args['village_id']}/build/{args['slot_index']}"))
 
 
-@tool("construct", "Construit un NOUVEAU bâtiment `building_id` sur un emplacement vide "
-      "`slot_index`. Les emplacements vides et leurs bâtiments constructibles (avec id) "
-      "figurent dans get_state.",
+@tool("construct", "Enfile la pose d'un NOUVEAU bâtiment `building_id` sur un emplacement "
+      "vide `slot_index` (même file illimitée, paiement au démarrage). Les emplacements "
+      "vides et leurs bâtiments constructibles (avec id) figurent dans get_state.",
       {"village_id": int, "slot_index": int, "building_id": int})
 async def construct(args: dict[str, Any]) -> dict[str, Any]:
     return _ok(await _req(
         "POST",
         f"/api/village/{args['village_id']}/construct/{args['slot_index']}/{args['building_id']}"))
+
+
+@tool("cancel_build", "Annule l'ordre de construction **en attente** à la position `pos` "
+      "de la file de planification (`build_plan` dans get_state). Les ordres déjà démarrés "
+      "ne sont pas annulables.",
+      {"village_id": int, "pos": int})
+async def cancel_build(args: dict[str, Any]) -> dict[str, Any]:
+    return _ok(await _req("POST",
+                          f"/api/village/{args['village_id']}/build/cancel/{args['pos']}"))
 
 
 @tool("demolish", "Démolit l'emplacement `slot_index` (nécessite bâtiment principal niv "
@@ -317,6 +364,45 @@ async def abandon_oasis(args: dict[str, Any]) -> dict[str, Any]:
     return _ok(await _req("POST", f"/api/village/{args['village_id']}/oasis/abandon", json_body=body))
 
 
+# --- Ordres permanents (exécutés par Python, 0 LLM) ---------------------------------
+
+@tool("set_plan",
+      "Enregistre/remplace tes ORDRES PERMANENTS pour un village : un exécuteur Python les "
+      "réalise AUTOMATIQUEMENT quand les ressources/la file le permettent (tu n'as PAS à "
+      "rester réveillé). Économise énormément de tokens. `actions` = liste d'ordres, chacun "
+      "un objet avec `op` et `village_id` :\n"
+      "- {op:'build', village_id, slot, level} : monter l'emplacement `slot` jusqu'à `level`.\n"
+      "- {op:'construct', village_id, slot, building_id, level} : bâtir puis monter à `level`.\n"
+      "- {op:'train', village_id, building_id, unit, count} : maintenir `count` unités "
+      "(index `unit`) — ré-entraîne après pertes.\n"
+      "- {op:'traps', village_id, count} : maintenir `count` pièges (trappeur gaulois).\n"
+      "- {op:'research', village_id, unit} : rechercher l'unité à l'académie.\n"
+      "Une liste vide efface le plan. Priorise les ordres (les premiers passent d'abord).",
+      {"type": "object",
+       "properties": {"actions": {"type": "array", "items": {"type": "object"}}},
+       "required": ["actions"]})
+async def set_plan(args: dict[str, Any]) -> dict[str, Any]:
+    from app.agents import playbook as PB
+    pid = _ACTING.get()
+    if pid is None:
+        # Repli : le serveur nous dira qui est le joueur humain via /api/villages.
+        try:
+            data = json.loads(await _req("GET", "/api/villages"))
+            pid = data.get("human_player_id")
+        except Exception:
+            pid = None
+    if pid is None:
+        return _ok("ERREUR : joueur agissant inconnu.")
+    actions = args.get("actions", [])
+    # Chaque ordre doit être rattaché à un village ; on tente, on renvoie l'erreur sinon.
+    try:
+        orders = PB.set_plan_multi(int(pid), actions)
+    except PB.PlanError as e:
+        return _ok(f"ERREUR : {e}")
+    return _ok(f"Plan enregistré ({len(orders)} ordre(s)). L'exécuteur les réalisera "
+               "automatiquement ; réveille-toi seulement sur événement.")
+
+
 # --- Contrôle de boucle -------------------------------------------------------------
 
 @tool("wait", "Laisse le temps s'écouler `seconds` secondes réelles (borné à 300), puis "
@@ -340,19 +426,31 @@ async def finish(args: dict[str, Any]) -> dict[str, Any]:
 # Tous les outils exposés à l'agent. `finish` doit être le dernier appel d'une macro.
 ALL_TOOLS = [
     get_state, list_villages, get_map, get_tile, get_hero,
+    get_situation, get_reports, get_trapper,
     academy_info, smithy_info, market_info, expansion_info,
-    build, construct, demolish, make_capital,
+    build, construct, cancel_build, demolish, make_capital,
     train, research, upgrade, set_traps, celebration,
     send_army, trade, create_trade_route,
     farmlist_add, farmlist_raid,
     settle, occupy_oasis, abandon_oasis,
-    wait, finish,
+    set_plan, wait, finish,
 ]
 
 SERVER_NAME = "travian"
 # Préfixe des noms d'outils tels que vus par le CLI : mcp__{server}__{tool}.
 TOOL_PREFIX = f"mcp__{SERVER_NAME}__"
 ALLOWED_TOOL_NAMES = [f"{TOOL_PREFIX}{t.name}" for t in ALL_TOOLS]
+
+# Sous-ensemble DÉFENSIF (Phase 4, joueur IA défenseur) : lecture + fortification +
+# renfort + ordres permanents, sans attaque/expansion/commerce (doctrine plus simple).
+DEFENSIVE_TOOLS = [
+    get_situation, get_state, get_reports, get_trapper, list_villages, get_hero,
+    academy_info, smithy_info,
+    build, construct, cancel_build, train, research, upgrade, set_traps,
+    send_army,  # renfort uniquement (la doctrine l'impose ; le serveur autorise reinforce)
+    set_plan, finish,
+]
+DEFENSIVE_TOOL_NAMES = [f"{TOOL_PREFIX}{t.name}" for t in DEFENSIVE_TOOLS]
 
 
 def build_server():

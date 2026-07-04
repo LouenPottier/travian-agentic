@@ -13,8 +13,8 @@ import sqlite3
 from pathlib import Path
 
 from app.data.tribes import Tribe
-from app.engine.village import (Village, Slot, BuildOrder, DemolishOrder, TrainOrder,
-                                ResearchOrder, UpgradeOrder, TrapOrder)
+from app.engine.village import (Village, Slot, BuildOrder, PlannedBuild, DemolishOrder,
+                                TrainOrder, ResearchOrder, UpgradeOrder, TrapOrder)
 
 DB_PATH = Path(__file__).resolve().parent.parent / "game.db"
 
@@ -30,6 +30,8 @@ def village_to_dict(v: Village) -> dict:
         "away": v.away,
         "slots": {str(i): [s.building_id, s.level] for i, s in v.slots.items()},
         "queue": [[o.slot_index, o.target_level, o.finish_at] for o in v.queue],
+        "build_plan": [[p.slot_index, p.building_id, p.target_level]
+                       for p in v.build_plan],
         "demolition": ([v.demolition.slot_index, v.demolition.target_level,
                         v.demolition.finish_at] if v.demolition else None),
         "training": [[t.building_id, t.unit_index, t.remaining, t.per_unit, t.next_finish]
@@ -53,6 +55,8 @@ def village_from_row(row: sqlite3.Row) -> Village:
     d = json.loads(row["data"])
     slots = {int(i): Slot(building_id=b, level=l) for i, (b, l) in d["slots"].items()}
     queue = [BuildOrder(slot_index=s, target_level=t, finish_at=f) for s, t, f in d["queue"]]
+    build_plan = [PlannedBuild(slot_index=s, building_id=b, target_level=t)
+                  for s, b, t in d.get("build_plan", [])]
     dem = d.get("demolition")
     demolition = DemolishOrder(slot_index=dem[0], target_level=dem[1], finish_at=dem[2]) if dem else None
     training = [TrainOrder(building_id=b, unit_index=u, remaining=r, per_unit=p, next_finish=f)
@@ -68,7 +72,7 @@ def village_from_row(row: sqlite3.Row) -> Village:
         tribe=Tribe(row["tribe"]), x=row["x"], y=row["y"],
         is_capital=bool(row["is_capital"]),
         slots=slots, resources=d["resources"], updated_at=d["updated_at"],
-        queue=queue, demolition=demolition,
+        queue=queue, build_plan=build_plan, demolition=demolition,
         server_speed=d["server_speed"], max_queue=d["max_queue"],
         troops=d["troops"], away=d.get("away", [0] * 10), training=training,
         research=d.get("research", [0] * 10), research_queue=research_queue,
@@ -211,7 +215,10 @@ def init_db() -> None:
                     # cumulés au fil des combats. Points = upkeep des troupes tuées.
                     "off_points REAL NOT NULL DEFAULT 0",
                     "def_points REAL NOT NULL DEFAULT 0",
-                    "raided REAL NOT NULL DEFAULT 0"):
+                    "raided REAL NOT NULL DEFAULT 0",
+                    # Phase 4 : joueur (un vrai compte, pas un PNJ passif) piloté par un
+                    # agent LLM. Distinct de `is_npc` (Natars/Nature/Voisin, jamais joués).
+                    "agent INTEGER NOT NULL DEFAULT 0"):
             try:
                 c.execute(f"ALTER TABLE players ADD COLUMN {col}")
             except sqlite3.OperationalError:
@@ -429,11 +436,21 @@ def reports_for(player_id: int, limit: int = 30) -> list[dict]:
     return out
 
 
-def create_player(name: str, tribe: Tribe, is_npc: bool = False) -> int:
+def create_player(name: str, tribe: Tribe, is_npc: bool = False,
+                  agent: bool = False) -> int:
     with connect() as c:
-        cur = c.execute("INSERT INTO players(name, tribe, is_npc) VALUES (?,?,?)",
-                        (name, int(tribe), int(is_npc)))
+        cur = c.execute(
+            "INSERT INTO players(name, tribe, is_npc, agent) VALUES (?,?,?,?)",
+            (name, int(tribe), int(is_npc), int(agent)))
         return cur.lastrowid
+
+
+def agent_players() -> list[dict]:
+    """Joueurs pilotés par un agent LLM (Phase 4 : `players.agent=1`)."""
+    with connect() as c:
+        rows = c.execute(
+            "SELECT id, name, tribe FROM players WHERE agent=1 ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_player(player_id: int) -> dict | None:

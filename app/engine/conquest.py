@@ -180,6 +180,7 @@ def conquer_village(target: V.Village, attacker_player_id: int, attacker_tribe: 
     target.troops = garrison
     target.away = [0] * 10
     target.training = []
+    target.build_plan = []  # file de construction planifiée caduque (nouveau proprio)
     target.research = [0] * 10
     target.research_queue = []
     target.upgrades = [0] * 10

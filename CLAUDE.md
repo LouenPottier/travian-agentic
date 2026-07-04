@@ -309,6 +309,27 @@ Phase 3 en cours (livrée incrémentalement) :
   `serialize` expose par emplacement `can_demolish` + `demolish_finish_in`/`demolish_target`. UI :
   bouton « 🏚️ Démolir » (avec sélecteur de niveau cible) dans la modale du bâtiment + indicateur
   🏚️ sur la tuile et dans le bandeau des chantiers en cours.
+- ✅ **File de construction planifiée (arbitrairement longue)** (`Village.build_plan`/`PlannedBuild`,
+  `village.enqueue_build`/`enqueue_new_building`/`cancel_plan` + `_start_ready_builds`/`tick`,
+  verrouillé par `tests/test_build_queue.py`) — **choix de dev assumé, écart documenté avec le vrai
+  Travian** (qui limite la file — 1/2 créneaux, gold — et **paie à la mise en file**) : on enfile un
+  nombre **illimité** d'ordres ; ils démarrent **dans l'ordre** dès qu'un créneau de construction
+  (`max_queue`) se libère **et** que les ressources sont là ; les ressources sont **débitées au
+  démarrage** (promotion `PlannedBuild → BuildOrder`), pas à l'enfilage ; un ordre est **annulable
+  tant qu'il n'a pas démarré** (`cancel_plan`, aucun remboursement puisqu'il n'a rien coûté).
+  `enqueue_build` vise le **niveau projeté** (courant + file) +1 ⇒ on peut enfiler plusieurs niveaux
+  du même emplacement ; **prérequis évalués contre l'état projeté** (on peut enfiler un prérequis puis
+  le bâtiment qui en dépend). **Promotion paresseuse et indépendante du moment de lecture** : `tick`
+  est une **boucle d'événements intégrée** (les builds sont dynamiques — une promotion crée une fin de
+  construction qui libère un créneau ; le moment d'une promotion = **instant analytique** où les
+  ressources franchissent le coût à production courante, `_affordable_delay`), donc un gros `tick` ==
+  plein de petits `tick`. Vaut pour **le joueur ET les comptes IA** (même surface HTTP `X-Acting-Player`
+  enforced ; l'exécuteur `playbook.py` évalue « ordre accompli » sur le **niveau projeté** pour ne pas
+  sur-enfiler ; outil agent `cancel_build`). API : `build`/`construct` renvoient `{started, finish_in|queued}`,
+  `POST …/build/cancel/{pos}` annule ; `serialize` expose `build_plan` + par emplacement `planned`/
+  `projected_level`/`can_queue`. UI : bouton « ➕ Enfiler → niv N », liste « 🕑 En file » (avec ✕) sous
+  les chantiers, marqueur 🕑 sur les tuiles. ⚠️ File **en mémoire** persistée avec le village (survit au
+  reload, contrairement aux registres d'agents).
 - ⬜ **Combat héros — affinages** : pas encore de monture→cavalerie en combat, ni de prise en
   compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.
 
@@ -469,5 +490,48 @@ Par ordre de rentabilité recommandé :
   paresseuse ×100 : `wait` dort puis renvoie l'état frais). Garde-fous : `max_turns`, deadline
   wall-clock, `wait` borné, une macro/village, Stop = `interrupt()`. Registre **en mémoire**
   (les macros ne survivent pas au reload uvicorn). Modèles : sonnet (défaut)/opus/haiku.
-- ⬜ Reste : bot scripté déterministe ; faire jouer *les autres joueurs* par des agents ;
+- ✅ **Agent défenseur PAR VILLAGE, piloté à la main** (`app/agents/defender.py` +
+  `app/engine/situation.py` + `app/agents/playbook.py`, endpoints
+  `/api/village/{id}/defender/{wake,unplug,stop}` + `GET .../defender`, `/api/agent/{situation,players}`,
+  section « 🛡️ Défenseur IA » de l'onglet 🤖, verrouillé par `tests/test_defender.py` +
+  `tests/test_playbook.py`). Vise les villages d'un **vrai compte IA** (semé près du joueur
+  humain, **`players.agent=1`**, Gaulois pour la défense/pièges ; migration douce
+  `_ensure_agent_player`, distinct de `is_npc`) — les villages humains, eux, se pilotent par
+  les macros. **Cerveau = Claude Code local** (Claude Agent SDK, abonnement, pas d'API payante).
+  - **Modèle « un tour puis sommeil » (choix utilisateur, pas de réveil auto)** : l'agent ne se
+    réveille **jamais** seul. Trois commandes indépendantes par village (registre en mémoire
+    clé=`village_id`) : **Réveiller** = un seul tour de LLM (`_turn` : observe → (re)pose la
+    pile d'ordres via `set_plan` → `finish(note)`, note persistante) puis sommeil ;
+    **Débrancher le LLM** = interrompt un tour en cours **sans toucher la pile** (`unplug`, garde
+    `playbook`) ⇒ l'exécuteur continue ; **Arrêter** = débranche **et** vide la pile
+    (`stop` → `playbook.clear_village`). Verrou : `test_unplug_keeps_stack_stop_clears`.
+  - **Contexte LLM minuscule = 2 couches** (retour utilisateur : minimiser les tokens) :
+    (1) **Exécuteur d'ordres permanents `playbook.py` — 0 LLM** : la pile d'ordres déclaratifs
+    (`build`/`construct` slot→niveau, `train` unité jusqu'à N, `traps`, `research`) est réalisée
+    **automatiquement** par une tâche asyncio de fond dès que la garde passe (ressources/file),
+    **via la surface HTTP enforced** (au plus une action réussie/cycle ; refus ⇒ ordre laissé
+    pour plus tard). C'est ce qui fait tourner le compte **sans LLM** entre deux réveils.
+    **Vaut aussi pour les macros** (outil `set_plan` ajouté à `ALL_TOOLS`). (2) **Un tour de
+    LLM** ne voit qu'un **digest compact** (`situation.build_digest`, ~centaines de tokens/compte,
+    **jamais `serialize()`**) + sa note ⇒ contexte borné et constant.
+  - **Identité par requête** (Partie clé) : la surface joueur était épinglée au global
+    `HUMAN_PLAYER_ID` ; on résout désormais un **joueur agissant** par requête via un
+    `ContextVar` posé par une dependency FastAPI depuis l'en-tête **`X-Acting-Player`** (repli
+    sur `HUMAN_PLAYER_ID` ⇒ navigateur humain inchangé). `acting_player()` remplace le global
+    dans **tous les handlers** ; l'ownership `v.player_id != acting_player()` reste imposé (403)
+    ⇒ l'agent (et l'exécuteur, `tools.set_acting_player`) n'agit que sur les villages de SON
+    compte, **même surface enforced** (« sans tricher » étendu à un autre compte).
+  - **Parité d'observation** : les menaces du digest n'exposent QUE ce que l'UI montre déjà
+    (kind/ETA/effectif total, **jamais la composition ni l'identité** de l'attaquant). Nouveaux
+    outils défensifs `get_situation`/`get_reports`/`get_trapper` (`get_reports` comblait le plus
+    gros manque : l'agent ne pouvait pas lire ses rapports). Sous-ensemble d'outils défensif
+    (`DEFENSIVE_TOOL_NAMES`) : lecture + fortification + renfort + `set_plan`, pas d'attaque.
+    `situation.should_wake` existe (menace/rapport/plan vide) mais **n'est pas auto-déclenché**
+    en v1 (réveil manuel) — dispo pour un futur mode auto optionnel.
+  - ⚠️ **Kirilloid muet** sur tout ceci → mécanique/valeurs = approximations documentées (le
+    seeding du joueur IA et les cadences sont des choix de dev, pas des chiffres de jeu ; toute
+    ACTION reste imposée par les endpoints existants recoupés kirilloid). Registre **en mémoire**
+    (défenseurs/plans ne survivent pas au reload uvicorn).
+- ⬜ Reste : **réveil auto optionnel** (brancher `should_wake` sur un événement) ; posture
+  **offensive/complète** (v1 = défense seule) ; plusieurs comptes IA ; bot scripté déterministe ;
   messagerie ; schéma observation/action formalisé pour usage externe.

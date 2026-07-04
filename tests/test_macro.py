@@ -20,6 +20,7 @@ from app import store
 # Monde temporaire AVANT d'importer app.main (qui appelle seed_world à l'import).
 store.DB_PATH = Path(tempfile.mkdtemp()) / "macro_test.db"
 import app.main as M          # noqa: E402  (seed_world s'exécute ici, sur notre DB temp)
+M.seed_world()  # re-seed explicite : app.main n'est importé qu'une fois (multi-modules)
 from app.agents import tools as T   # noqa: E402
 from app.engine import village as V  # noqa: E402
 

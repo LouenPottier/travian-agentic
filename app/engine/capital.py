@@ -93,8 +93,11 @@ def _drop_incompatible(v: V.Village, *, is_capital: bool) -> list[int]:
             removed.append(s.building_id)
             removed_slots.add(si)
             v.slots.pop(si, None)
-    if removed_slots:
+    if removed_slots or removed:
         v.queue = [o for o in v.queue if o.slot_index not in removed_slots]
+        v.build_plan = [p for p in v.build_plan
+                        if p.slot_index not in removed_slots
+                        and p.building_id not in removed]
     if B.BREWERY in removed:        # brasserie retirée ⇒ fête de la bière interrompue
         v.brewery_festival = None
     return removed
@@ -116,4 +119,7 @@ def _cap_resource_fields(v: V.Village) -> list[tuple[int, int]]:
     v.queue = [o for o in v.queue
                if not (o.slot_index in res_slots
                        and o.target_level > V.FIELD_CAP_NON_CAPITAL)]
+    v.build_plan = [p for p in v.build_plan
+                    if not (p.slot_index in res_slots
+                            and p.target_level > V.FIELD_CAP_NON_CAPITAL)]
     return reduced

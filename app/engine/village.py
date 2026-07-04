@@ -31,9 +31,28 @@ class Slot:
 
 @dataclass
 class BuildOrder:
+    """Construction **en cours** (démarrée) : ressources déjà payées, `finish_at` fixé.
+    Au plus `Village.max_queue` à la fois (le reste attend dans `Village.build_plan`)."""
     slot_index: int
     target_level: int
     finish_at: float
+
+
+@dataclass
+class PlannedBuild:
+    """Construction **en attente** dans la file de planification (`Village.build_plan`).
+
+    File **arbitrairement longue** (choix de dev, cf. CLAUDE.md — le vrai Travian
+    limite la file et paie à la mise en file) : les ordres se lancent **dans l'ordre**
+    dès qu'un créneau de construction se libère **et** que les ressources sont là ;
+    les ressources ne sont **payées qu'au démarrage** (promotion en `BuildOrder`).
+    Tant qu'un ordre n'a pas démarré, il est **annulable** (cf. `cancel_plan`).
+
+    `building_id` = bâtiment visé (utile pour une **pose** sur emplacement vide, dont
+    le `Slot` n'est créé qu'au démarrage) ; `target_level` = niveau absolu visé."""
+    slot_index: int
+    building_id: int
+    target_level: int
 
 
 @dataclass
@@ -87,6 +106,10 @@ class Village:
     resources: list[float] = field(default_factory=lambda: [750.0, 750.0, 750.0, 750.0])
     updated_at: float = field(default_factory=_time.time)
     queue: list[BuildOrder] = field(default_factory=list)
+    # File de construction **planifiée** (arbitrairement longue) : ordres en attente,
+    # non encore payés, lancés dans l'ordre dès qu'un créneau se libère et que les
+    # ressources sont disponibles (cf. PlannedBuild, enqueue_build, _start_ready_builds).
+    build_plan: list[PlannedBuild] = field(default_factory=list)
     # Démolition en cours (bâtiment principal niv 10+, cf. enqueue_demolish) : None ou
     # un DemolishOrder. Une seule à la fois, indépendante de la file de construction.
     demolition: "DemolishOrder | None" = None
@@ -291,6 +314,83 @@ def capacities(v: Village) -> list[int]:
     return [w, w, w, g]
 
 
+# --- File de construction planifiée (arbitrairement longue) ------------------
+# Modèle (choix de dev documenté, cf. CLAUDE.md) : `Village.build_plan` est une file
+# **illimitée** d'ordres en attente ; ils se lancent **dans l'ordre** dès qu'un créneau
+# de construction (`max_queue`) se libère **et** que les ressources sont disponibles.
+# Les ressources ne sont **payées qu'au démarrage** (promotion `PlannedBuild → BuildOrder`).
+# Tant qu'un ordre n'a pas démarré, il est **annulable** (`cancel_plan`).
+def _plan_cost(p: "PlannedBuild") -> list[float]:
+    return BLD.get(p.building_id).cost_at(p.target_level)
+
+
+def _affordable_delay(v: Village, cost) -> float | None:
+    """Secondes (temps réel) avant que `v` puisse payer `cost` à la production courante.
+
+    0 si déjà finançable ; None si jamais (une ressource déficitaire dont la production
+    nette est ≤ 0, ou un coût dépassant la capacité de stockage → seuil inatteignable)."""
+    prod = net_production(v)
+    caps = capacities(v)
+    dt = 0.0
+    for i in range(4):
+        need = cost[i] - v.resources[i]
+        if need <= 1e-6:
+            continue
+        if cost[i] > caps[i]:              # jamais stockable → inatteignable
+            return None
+        rate = prod[i] * v.server_speed / 3600.0  # ressource / seconde réelle
+        if rate <= 0:
+            return None
+        dt = max(dt, need / rate)
+    return dt
+
+
+def _start_ready_builds(v: Village, at: float) -> None:
+    """Démarre (paie + met en construction) les ordres planifiés finançables à `at`,
+    tant qu'un créneau est libre et que la **tête** de file peut démarrer (ordre strict :
+    un ordre non finançable ou dont l'emplacement construit déjà bloque toute la file)."""
+    while (len(v.queue) < v.max_queue and v.build_plan
+           and v.build_plan[0].slot_index not in {o.slot_index for o in v.queue}):
+        p = v.build_plan[0]
+        cost = _plan_cost(p)
+        if any(v.resources[i] < cost[i] - 1e-6 for i in range(4)):
+            break
+        for i in range(4):
+            v.resources[i] = max(0.0, v.resources[i] - cost[i])
+        if p.slot_index not in v.slots:      # pose : le Slot n'existe qu'au démarrage
+            v.slots[p.slot_index] = Slot(building_id=p.building_id, level=0)
+        building = BLD.get(p.building_id)
+        v.queue.append(BuildOrder(
+            slot_index=p.slot_index, target_level=p.target_level,
+            finish_at=at + build_time(v, building, p.target_level)))
+        v.build_plan.pop(0)
+
+
+def _projected_slot_level(v: Village, slot_index: int) -> int:
+    """Niveau que `slot_index` atteindra une fois file active + planifiée réalisées."""
+    lvl = v.slots[slot_index].level if slot_index in v.slots else 0
+    for o in v.queue:
+        if o.slot_index == slot_index:
+            lvl = max(lvl, o.target_level)
+    for p in v.build_plan:
+        if p.slot_index == slot_index:
+            lvl = max(lvl, p.target_level)
+    return lvl
+
+
+def _projected_levels(v: Village) -> dict[int, int]:
+    """Niveaux par `building_id` en tenant compte de la file (pour valider les prérequis
+    d'un ordre qu'on peut enfiler **après** son prérequis lui aussi mis en file)."""
+    levels = dict(building_levels(v))
+    for o in v.queue:
+        s = v.slots.get(o.slot_index)
+        if s is not None:
+            levels[s.building_id] = max(levels.get(s.building_id, 0), o.target_level)
+    for p in v.build_plan:
+        levels[p.building_id] = max(levels.get(p.building_id, 0), p.target_level)
+    return levels
+
+
 # --- Mise à jour paresseuse --------------------------------------------------
 def tick(v: Village, now: float | None = None) -> None:
     """Avance l'état du village jusqu'à `now`.
@@ -303,64 +403,81 @@ def tick(v: Village, now: float | None = None) -> None:
     if now <= v.updated_at:
         return
 
-    # Collecte des événements <= now : construction, entraînement, recherche
-    # (académie), amélioration (forge) et pièges (trappeur). Chacun peut modifier
-    # la production (champ amélioré, troupe de plus à nourrir), d'où le découpage.
-    events: list[tuple[float, str, object]] = []
-    for o in v.queue:
-        if o.finish_at <= now:
-            events.append((o.finish_at, "build", o))
+    # Événements « statiques » (n'en engendrent pas de nouveaux au fil de l'eau) :
+    # entraînement, recherche (académie), amélioration (forge), pièges, démolition.
+    # Pré-expansés, triés, consommés par le pointeur `si`.
+    static: list[tuple[float, str, object]] = []
     for to in v.training:
         t = to.next_finish
         for _ in range(to.remaining):
-            if t > now:
-                break
-            events.append((t, "train", to))
-            t += to.per_unit
+            static.append((t, "train", to)); t += to.per_unit
     for ro in v.research_queue:
-        if ro.finish_at <= now:
-            events.append((ro.finish_at, "research", ro))
+        static.append((ro.finish_at, "research", ro))
     for uo in v.upgrade_queue:
-        if uo.finish_at <= now:
-            events.append((uo.finish_at, "upgrade", uo))
+        static.append((uo.finish_at, "upgrade", uo))
     for tp in v.trap_queue:
         t = tp.next_finish
         for _ in range(tp.remaining):
-            if t > now:
-                break
-            events.append((t, "trap", tp))
-            t += tp.per_unit
-    if v.demolition is not None and v.demolition.finish_at <= now:
-        events.append((v.demolition.finish_at, "demolish", v.demolition))
-    events.sort(key=lambda e: e[0])
+            static.append((t, "trap", tp)); t += tp.per_unit
+    if v.demolition is not None:
+        static.append((v.demolition.finish_at, "demolish", v.demolition))
+    static.sort(key=lambda e: e[0])
+    si = 0
 
+    # Boucle d'événements **intégrée** : la file de construction est dynamique (une
+    # promotion crée une fin de construction, qui libère un créneau pour la suivante ;
+    # le moment d'une promotion dépend de l'accumulation de ressources, elle-même
+    # modifiée à chaque fin de construction/entraînement). On recalcule donc, à chaque
+    # itération, le prochain instant parmi : fin statique, fin de construction, et
+    # promotion (démarrage d'un ordre planifié dès qu'il devient finançable).
     cursor = v.updated_at
-    for t, kind, payload in events:
-        _accumulate(v, cursor, t)
-        cursor = t
-        if kind == "build":
-            v.slots[payload.slot_index].level = payload.target_level
-        elif kind == "train":  # une unité sort
-            v.troops[payload.unit_index] += 1
-            payload.remaining -= 1
-            payload.next_finish += payload.per_unit
-        elif kind == "research":
-            v.research[payload.unit_index] = 1
-        elif kind == "upgrade":
-            v.upgrades[payload.unit_index] = payload.target_level
-        elif kind == "demolish":  # un niveau démoli (0 ⇒ bâtiment détruit)
-            slot = v.slots.get(payload.slot_index)
-            if slot is not None:
-                slot.level = payload.target_level
-                if payload.target_level <= 0:
-                    del v.slots[payload.slot_index]  # emplacement libéré
-        else:  # trap : un piège construit
-            v.traps += 1
-            payload.remaining -= 1
-            payload.next_finish += payload.per_unit
+    INF = float("inf")
+    while True:
+        e_static = static[si][0] if si < len(static) else INF
+        e_build = min((o.finish_at for o in v.queue if o.finish_at > cursor),
+                      default=INF)
+        e_promo = INF
+        if (len(v.queue) < v.max_queue and v.build_plan
+                and v.build_plan[0].slot_index not in {o.slot_index for o in v.queue}):
+            delay = _affordable_delay(v, _plan_cost(v.build_plan[0]))
+            if delay is not None:
+                e_promo = cursor + delay
+        e = min(e_static, e_build, e_promo, now)
 
-    _accumulate(v, cursor, now)
-    v.queue = [o for o in v.queue if o.finish_at > now]
+        _accumulate(v, cursor, e)
+        cursor = e
+
+        # Fins de construction dues à `cursor` (emplacement monté d'un niveau).
+        for o in [o for o in v.queue if o.finish_at <= cursor + 1e-6]:
+            v.slots[o.slot_index].level = o.target_level
+            v.queue.remove(o)
+        # Événements statiques dus à `cursor`.
+        while si < len(static) and static[si][0] <= cursor + 1e-6:
+            _t, kind, payload = static[si]; si += 1
+            if kind == "train":  # une unité sort
+                v.troops[payload.unit_index] += 1
+                payload.remaining -= 1
+                payload.next_finish += payload.per_unit
+            elif kind == "research":
+                v.research[payload.unit_index] = 1
+            elif kind == "upgrade":
+                v.upgrades[payload.unit_index] = payload.target_level
+            elif kind == "demolish":  # un niveau démoli (0 ⇒ bâtiment détruit)
+                slot = v.slots.get(payload.slot_index)
+                if slot is not None:
+                    slot.level = payload.target_level
+                    if payload.target_level <= 0:
+                        del v.slots[payload.slot_index]  # emplacement libéré
+            else:  # trap : un piège construit
+                v.traps += 1
+                payload.remaining -= 1
+                payload.next_finish += payload.per_unit
+        # Promotions finançables à `cursor` (démarrage + paiement des ordres planifiés).
+        _start_ready_builds(v, cursor)
+
+        if cursor >= now:
+            break
+
     v.training = [to for to in v.training if to.remaining > 0]
     v.research_queue = [ro for ro in v.research_queue if ro.finish_at > now]
     v.upgrade_queue = [uo for uo in v.upgrade_queue if uo.finish_at > now]
@@ -456,43 +573,59 @@ def effective_max_level(v: Village, building: Building) -> int:
     return building.max_level
 
 
-def enqueue_build(v: Village, slot_index: int, now: float | None = None) -> BuildOrder:
-    """Met en file la montée d'un niveau de l'emplacement `slot_index`."""
+def enqueue_build(v: Village, slot_index: int,
+                  now: float | None = None) -> "BuildOrder | PlannedBuild":
+    """Met en **file de planification** la montée d'un niveau de `slot_index`.
+
+    Le niveau visé est le **niveau projeté** (courant + ordres déjà en file) +1, ce qui
+    permet d'enfiler plusieurs niveaux d'affilée sur le même emplacement. L'ordre démarre
+    aussitôt si un créneau est libre et les ressources présentes (renvoie alors le
+    `BuildOrder` lancé) ; sinon il reste en attente (renvoie le `PlannedBuild`). Les
+    ressources ne sont **débitées qu'au démarrage** (cf. `_start_ready_builds`)."""
     now = now or _time.time()
     tick(v, now)
 
-    if len([o for o in v.queue if True]) >= v.max_queue:
-        raise BuildError("File de construction pleine.")
-    if slot_index in (o.slot_index for o in v.queue):
-        raise BuildError("Cet emplacement est déjà en construction.")
-
     slot = v.slots.get(slot_index)
-    if slot is None:
-        raise BuildError("Emplacement vide (pose de bâtiment non gérée en Phase 1).")
+    if slot is not None:
+        building_id = slot.building_id
+    else:
+        # Emplacement vide : autorisé seulement s'il est déjà **planifié** (pose en
+        # attente) ⇒ on enfile un niveau de plus. Sinon, il faut poser le bâtiment.
+        planned = next((p for p in v.build_plan if p.slot_index == slot_index), None)
+        if planned is None:
+            raise BuildError("Emplacement vide (utilise la pose de bâtiment).")
+        building_id = planned.building_id
 
-    building = BLD.get(slot.building_id)
-    target = slot.level + 1
+    building = BLD.get(building_id)
+    target = _projected_slot_level(v, slot_index) + 1
     if target > effective_max_level(v, building):
         if building.slot == "res" and not v.is_capital:
             raise BuildError("Hors capitale, les champs sont limités au niveau 10.")
         raise BuildError("Niveau maximum atteint.")
 
-    levels = building_levels(v)
+    # Prérequis évalués contre l'état **projeté** (niveaux courants + file) : on peut
+    # ainsi enfiler un prérequis puis le bâtiment qui en dépend dans la même file.
+    levels = _projected_levels(v)
     for bid, lvl in building.reqs.items():
         if levels.get(bid, 0) < lvl:
             raise BuildError(f"Prérequis manquant : {BLD.get(bid).name} niv {lvl}.")
 
-    cost = building.cost_at(target)
-    if any(v.resources[i] < cost[i] for i in range(4)):
-        raise BuildError("Ressources insuffisantes.")
+    p = PlannedBuild(slot_index=slot_index, building_id=building_id, target_level=target)
+    v.build_plan.append(p)
+    _start_ready_builds(v, now)
+    started = next((o for o in v.queue
+                    if o.slot_index == slot_index and o.target_level == target), None)
+    return started if started is not None else p
 
-    for i in range(4):
-        v.resources[i] -= cost[i]
 
-    order = BuildOrder(slot_index=slot_index, target_level=target,
-                       finish_at=now + build_time(v, building, target))
-    v.queue.append(order)
-    return order
+def cancel_plan(v: Village, index: int, now: float | None = None) -> PlannedBuild:
+    """Annule l'ordre **en attente** (non démarré) à la position `index` de la file de
+    planification. Les constructions déjà démarrées (`v.queue`) ne sont pas annulables."""
+    now = now or _time.time()
+    tick(v, now)
+    if not (0 <= index < len(v.build_plan)):
+        raise BuildError("Ordre de construction introuvable ou déjà démarré.")
+    return v.build_plan.pop(index)
 
 
 # --- Démolition de bâtiments (bâtiment principal niv 10+) --------------------
@@ -553,6 +686,8 @@ def enqueue_demolish(v: Village, slot_index: int, target_level: int | None = Non
         raise BuildError("Ce bâtiment ne peut pas être démoli.")
     if slot_index in (o.slot_index for o in v.queue):
         raise BuildError("Cet emplacement est en cours de construction.")
+    if any(p.slot_index == slot_index for p in v.build_plan):
+        raise BuildError("Cet emplacement a une construction planifiée.")
     if target_level is None:
         target_level = slot.level - 1
     if not (0 <= target_level < slot.level):
@@ -619,16 +754,20 @@ def enqueue_new_building(v: Village, slot_index: int, building_id: int,
     tick(v, now)
     if slot_index in v.slots:
         raise BuildError("Emplacement déjà occupé.")
+    if any(p.slot_index == slot_index for p in v.build_plan):
+        raise BuildError("Emplacement déjà planifié.")
     if building_id not in (b.id for b in available_buildings(v, slot_index,
                                                              account_has_palace)):
         raise BuildError("Bâtiment non constructible ici.")
 
-    v.slots[slot_index] = Slot(building_id=building_id, level=0)
-    try:
-        return enqueue_build(v, slot_index, now)
-    except BuildError:
-        del v.slots[slot_index]  # annuler la pose si l'ordre échoue
-        raise
+    # Pose planifiée : le Slot n'est créé qu'au **démarrage** (cf. _start_ready_builds),
+    # de sorte qu'un ordre en attente ne « réserve » pas l'emplacement dans l'UI (mais
+    # une 2ᵉ pose sur le même emplacement est refusée ci-dessus).
+    p = PlannedBuild(slot_index=slot_index, building_id=building_id, target_level=1)
+    v.build_plan.append(p)
+    _start_ready_builds(v, now)
+    started = next((o for o in v.queue if o.slot_index == slot_index), None)
+    return started if started is not None else p
 
 
 # --- Entraînement de troupes -------------------------------------------------

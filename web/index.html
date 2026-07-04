@@ -124,6 +124,16 @@
       actions joueur légitimes (coûts, temps, files, loyauté respectés — aucune triche).
       Nécessite le CLI <code>claude</code> installé et connecté (ton abonnement, pas d'API).</div>
     <div id="macro"></div>
+
+    <div id="defenderWrap" style="margin-top:24px;border-top:1px solid rgba(255,255,255,.12);padding-top:16px">
+      <h2 style="margin:0 0 6px">🛡️ Défenseur IA — un autre compte joué en entier (défense)</h2>
+      <div class="cost" style="opacity:.7;margin-bottom:10px">
+        Un agent LLM joue un <b>autre</b> compte du monde en posture défensive. Pour tenir le
+        contexte minuscule : il pose des <b>ordres permanents</b> (construction/entraînement/
+        pièges) qu'un exécuteur réalise <b>automatiquement sans LLM</b>, et n'est réveillé que
+        sur <b>événement</b> (attaque entrante, nouveau rapport). Même abonnement <code>claude</code>.</div>
+      <div id="defender"></div>
+    </div>
   </div>
 </main>
 <div id="modal" onclick="if(event.target.id==='modal')closeModal()">
@@ -223,7 +233,7 @@ function render(v){
   for(const [idx,[gx,gy]] of Object.entries(FIELD_POS)){
     const s=SLOTMAP[idx]; const bid=s.building_id; const im=bimg(bid);
     fcells.push({gx,gy, color:FIELD_COLOR[bid], img:im, imgDy:10,
-      icon:(im?"":FIELD_ICON[bid])+(s.finish_in!=null?"⏳":""),
+      icon:(im?"":FIELD_ICON[bid])+(s.finish_in!=null?"⏳":"")+(s.planned>0?"🕑":""),
       badge:s.level, click:`openSlot(${idx})`});
   }
   fcells.push({gx:3,gy:3, color:"#8a6a44", icon:"🏰"});
@@ -237,11 +247,13 @@ function render(v){
       const im=bimg(slot.building_id);
       ccells.push({gx,gy, color:"#7a5e3c", img:im,
         icon:(im?"":(BICON[slot.building_id]||"🏚️"))
-             +(slot.finish_in!=null?"⏳":"")+(slot.demolish_finish_in!=null?"🏚️":""),
+             +(slot.finish_in!=null?"⏳":"")+(slot.planned>0?"🕑":"")
+             +(slot.demolish_finish_in!=null?"🏚️":""),
         badge:slot.level, click:`openSlot(${s})`});
     } else {
       const can = LAST.is_own && slot && slot.buildable && slot.buildable.length;
-      ccells.push({gx,gy, color:"#4a3a26", dashed:true, icon:can?"➕":"·",
+      ccells.push({gx,gy, color:"#4a3a26", dashed:true,
+        icon:(slot&&slot.planned)?"🕑":(can?"➕":"·"),
         click:`openSlot(${s})`});
     }
   }
@@ -262,11 +274,21 @@ function render(v){
 let ACTIVE_BUILDS=[];
 function renderBuilds(){
   const box=document.getElementById("builds");
-  if(!ACTIVE_BUILDS.length){ box.innerHTML=""; return; }
+  const plan=(LAST&&LAST.build_plan)||[];
+  if(!ACTIVE_BUILDS.length && !plan.length){ box.innerHTML=""; return; }
   const now=Date.now()/1000;
-  box.innerHTML=`<div class="queuebox"><b>🔨 Constructions en cours</b>`+
+  let h=`<div class="queuebox"><b>🔨 Constructions en cours</b>`+
     ACTIVE_BUILDS.map(b=>`<div class="cost">${b.label} — `+
-      `<span class="timer">${fmtTimer(b.end-now)}</span></div>`).join("")+`</div>`;
+      `<span class="timer">${fmtTimer(b.end-now)}</span></div>`).join("");
+  // File de planification : ordres en attente (payés au démarrage), annulables.
+  if(plan.length){
+    h+=`<div class="cost" style="opacity:.75;margin-top:6px">🕑 En file (${plan.length}) — `+
+       `lancée dans l'ordre dès qu'un créneau et les ressources sont disponibles :</div>`;
+    h+=plan.map(p=>`<div class="cost">#${p.pos+1} · ${p.name} → niv ${p.target_level} · ${fmtCost(p.cost)}`
+      +((LAST&&LAST.is_own)?` <button style="padding:0 7px;margin-left:4px" title="Annuler"
+         onclick="cancelBuild(${p.pos})">✕</button>`:"")+`</div>`).join("");
+  }
+  box.innerHTML=h+`</div>`;
 }
 
 // ---- Modale de bâtiment : amélioration + effet + panneau fonctionnel --------
@@ -290,6 +312,10 @@ function buildModal(s){
         P=document.getElementById("modalPanel");
   if(s.empty){
     T.textContent=`Construire — emplacement ${s.index}`;
+    if(s.planned){  // pose déjà planifiée (démarre dès créneau + ressources)
+      L.innerHTML=`<div class="cost">🕑 Pose planifiée : <b>${s.planned}</b> — démarre dès qu'un
+        créneau de construction se libère et que les ressources sont disponibles.</div>`;
+      P.innerHTML=""; return; }
     L.innerHTML=(s.buildable&&s.buildable.length)? s.buildable.map(b=>
       `<div class="opt"><span><b>${b.name}</b><div class="cost">${fmtCost(b.cost)} · ⏱️ ${fmtTimer(b.time)}</div></span>
        ${LAST.is_own?`<button onclick="construct(${s.index},${b.id})">Construire</button>`:""}</div>`).join("")
@@ -300,10 +326,16 @@ function buildModal(s){
   let body=`<div class="cost" style="opacity:.95">🔎 ${s.effect||""}`;
   if(s.next_effect) body+=` <span style="opacity:.65">— niv ${s.level+1} : ${s.next_effect}</span>`;
   body+=`</div>`;
-  if(s.finish_in!=null) body+=`<div class="cost">⏳ amélioration → ${s.target_level} (${fmtTimer(s.finish_in)})</div>`;
-  else if(s.next_cost==null) body+=`<div class="cost">Niveau maximum atteint.</div>`;
-  else { body+=`<div class="cost">Améliorer → niv ${s.level+1} : ${fmtCost(s.next_cost)} · ⏱️ ${fmtTimer(s.next_time)}</div>`;
-    if(LAST.is_own) body+=`<button onclick="build(${s.index})">Améliorer → ${s.level+1}</button>`; }
+  if(s.finish_in!=null) body+=`<div class="cost">⏳ construction → niv ${s.target_level} (${fmtTimer(s.finish_in)})</div>`;
+  if(s.planned>0) body+=`<div class="cost">🕑 ${s.planned} en file — niveau projeté ${s.projected_level}</div>`;
+  if(s.can_queue){
+    // Coût affiché = celui du **prochain niveau réellement construit** (level+1) ; le bouton
+    // enfile le niveau projeté suivant (payé au démarrage, file illimitée).
+    if(s.projected_level===s.level)
+      body+=`<div class="cost">Améliorer → niv ${s.level+1} : ${fmtCost(s.next_cost)} · ⏱️ ${fmtTimer(s.next_time)}</div>`;
+    if(LAST.is_own) body+=`<button onclick="build(${s.index})">➕ Enfiler → niv ${s.projected_level+1}</button>`;
+  } else if(s.finish_in==null && !(s.planned>0)) body+=`<div class="cost">Niveau maximum atteint.</div>`;
+  else body+=`<div class="cost" style="opacity:.7">File complète jusqu'au niveau maximum.</div>`;
   // Démolition (bâtiment principal niv 10+) : sans remboursement, un niveau à la fois.
   if(s.demolish_finish_in!=null)
     body+=`<div class="cost" style="margin-top:6px">🏚️ démolition → niv ${s.demolish_target} (${fmtTimer(s.demolish_finish_in)})</div>`;
@@ -358,6 +390,8 @@ async function post(url,opt,errId){ const msg=document.getElementById(errId||"ms
 async function build(idx){ const d=await post(`/api/village/${CURRENT}/build/${idx}`,null,"modalMsg");
   if(d) render(d.village); }
 async function construct(idx,id){ const d=await post(`/api/village/${CURRENT}/construct/${idx}/${id}`,null,"modalMsg");
+  if(d) render(d.village); }
+async function cancelBuild(pos){ const d=await post(`/api/village/${CURRENT}/build/cancel/${pos}`);
   if(d) render(d.village); }
 async function demolish(idx){ const sel=document.getElementById(`demTo_${idx}`);
   const to=sel?sel.value:""; const url=`/api/village/${CURRENT}/demolish/${idx}`+(to!==""?`?target_level=${to}`:"");
@@ -1069,7 +1103,7 @@ function showTab(name){ TAB=name;
   if(name==="reports") loadReports();
   if(name==="hero") loadHero();
   if(name==="ranking") loadRanking();
-  if(name==="macro") loadMacro();
+  if(name==="macro"){ loadMacro(); loadDefenders(); }
   if(name==="map"){ if(!MAP_LOADED){ centerOnVillage(); MAP_LOADED=true; } else loadMap(); }
 }
 let MAP_LOADED=false;
@@ -1365,7 +1399,97 @@ async function stopMacro(){
   const d=await post(`/api/village/${CURRENT}/macro/stop`,null,"msg");
   if(d) renderMacro(d);
 }
-setInterval(()=>{ if(TAB==="macro") loadMacro(); }, 3000);
+
+// --- Défenseur IA — un agent défensif PAR VILLAGE, piloté à la main ----------
+const DEF_ICON=Object.assign({},MACRO_ICON,{wake:"⏰"});
+let DEF_VID=null;
+async function loadDefenders(){
+  try{
+    const d=await (await fetch("/api/agent/players")).json();
+    renderDefender(d.players||[]);
+    if(DEF_VID!=null){
+      const s=await (await fetch(`/api/village/${DEF_VID}/defender`)).json();
+      renderDefenderStatus(s);
+    }
+  }catch(e){}
+}
+function renderDefender(players){
+  const box=document.getElementById("defender");
+  // Aplatir : tous les villages des joueurs IA (chacun a son propre agent défensif).
+  const vills=[];
+  players.forEach(p=>(p.villages||[]).forEach(v=>vills.push({...v,player:p.name,tribe:p.tribe})));
+  if(!vills.length){ box.innerHTML=`<div class="cost" style="opacity:.6">Aucun joueur IA dans ce monde.</div>`; box.dataset.built=""; return; }
+  if(DEF_VID==null || !vills.some(v=>v.id===DEF_VID)) DEF_VID=vills[0].id;
+  if(!box.dataset.built){
+    box.innerHTML=`
+      <div id="defList" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <select id="defModel">
+          <option value="sonnet">Sonnet (défaut)</option>
+          <option value="opus">Opus</option>
+          <option value="haiku">Haiku</option>
+        </select>
+        <button id="defWake" onclick="wakeDefender()" title="Un tour de LLM : observe et (re)pose la pile d'ordres">▶️ Réveiller (1 tour)</button>
+        <button id="defUnplug" onclick="unplugDefender()" class="ghost" title="Arrête le LLM mais garde la pile : l'exécuteur continue">⏸️ Débrancher le LLM</button>
+        <button id="defStop" onclick="stopDefender()" class="ghost" title="Débranche le LLM ET vide la pile d'ordres">⏹️ Arrêter (vider la pile)</button>
+      </div>
+      <div id="defStatus" class="cost" style="margin:6px 0"></div>
+      <div id="defJournal" style="max-height:360px;overflow:auto;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:8px;font-size:13px;line-height:1.45"></div>`;
+    box.dataset.built="1";
+  }
+  document.getElementById("defList").innerHTML=vills.map(v=>{
+    const sel=v.id===DEF_VID;
+    return `<button class="${sel?'':'ghost'}" onclick="selectDefender(${v.id})">🛡️ ${escMacro(v.name)} <span style="opacity:.6">(${v.x}|${v.y} · ${escMacro(v.tribe)})</span></button>`;
+  }).join("");
+}
+function selectDefender(id){ DEF_VID=id; loadDefenders(); }
+function renderDefenderStatus(s){
+  const thinking=!!s.thinking;
+  const wake=document.getElementById("defWake");
+  if(wake) wake.disabled=thinking;
+  const st=document.getElementById("defStatus");
+  if(st){
+    const LBL={none:"jamais réveillé",idle:"prêt",thinking:"🧠 réflexion…",asleep:"😴 en sommeil (pile active)",unplugged:"⏸️ LLM débranché (pile active)",stopped:"⏹️ arrêté",error:"🔴 erreur"};
+    const pile=s.has_plan?`🗂️ pile : ${s.plan_size} ordre(s) — réalisés automatiquement`:"🗂️ pile vide";
+    st.innerHTML=`<b>${LBL[s.status]||s.status}</b> · ${s.thinks||0} réveil(s) LLM`
+      +(s.model?` · modèle ${s.model}`:"")+`<br>${pile}`
+      +(s.note?`<br>📝 ${escMacro(s.note)}`:"");
+  }
+  const j=document.getElementById("defJournal");
+  if(j){
+    const atBottom=j.scrollHeight-j.scrollTop-j.clientHeight<40;
+    j.innerHTML=(s.log||[]).map(e=>{
+      const ic=DEF_ICON[e.kind]||"·";
+      if(e.kind==="tool_use")
+        return `<div><span style="opacity:.5">${e.t}s</span> ${ic} <b>${e.tool}</b> <span style="opacity:.75">${escMacro(JSON.stringify(e.input))}</span></div>`;
+      if(e.kind==="tool_result"){
+        const col=e.error?"#e77":"#8c8";
+        return `<div><span style="opacity:.5">${e.t}s</span> ${ic} <span style="color:${col};opacity:.85">${escMacro(e.text)}</span></div>`;
+      }
+      const col=e.kind==="error"?"#e77":(e.kind==="assistant"?"#ddd":(e.kind==="wake"?"#ec8":"#9ab"));
+      return `<div><span style="opacity:.5">${e.t}s</span> ${ic} <span style="color:${col}">${escMacro(e.text||"")}</span></div>`;
+    }).join("")||`<div class="cost" style="opacity:.5">— journal vide —</div>`;
+    if(atBottom) j.scrollTop=j.scrollHeight;
+  }
+}
+async function wakeDefender(){
+  if(DEF_VID==null) return;
+  const model=document.getElementById("defModel").value;
+  const d=await post(`/api/village/${DEF_VID}/defender/wake`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify({model})},"msg");
+  if(d) renderDefenderStatus(d);
+}
+async function unplugDefender(){
+  if(DEF_VID==null) return;
+  const d=await post(`/api/village/${DEF_VID}/defender/unplug`,null,"msg");
+  if(d) renderDefenderStatus(d);
+}
+async function stopDefender(){
+  if(DEF_VID==null) return;
+  const d=await post(`/api/village/${DEF_VID}/defender/stop`,null,"msg");
+  if(d) renderDefenderStatus(d);
+}
+setInterval(()=>{ if(TAB==="macro"){ loadMacro(); loadDefenders(); } }, 3000);
 
 setInterval(load,4000); setInterval(loadReports,6000);
 setInterval(updateHeroBadge,7000);
