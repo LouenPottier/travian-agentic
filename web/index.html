@@ -284,9 +284,19 @@ function renderBuilds(){
   if(plan.length){
     h+=`<div class="cost" style="opacity:.75;margin-top:6px">🕑 En file (${plan.length}) — `+
        `lancée dans l'ordre dès qu'un créneau et les ressources sont disponibles :</div>`;
-    h+=plan.map(p=>`<div class="cost">#${p.pos+1} · ${p.name} → niv ${p.target_level} · ${fmtCost(p.cost)}`
-      +((LAST&&LAST.is_own)?` <button style="padding:0 7px;margin-left:4px" title="Annuler"
-         onclick="cancelBuild(${p.pos})">✕</button>`:"")+`</div>`).join("");
+    // ETA de démarrage sous l'hypothèse « sans attente » : on enchaîne les durées à partir
+    // de la fin du (des) chantier(s) actif(s), sinon de maintenant. `start` est absolu ⇒
+    // le décompte descend en direct comme celui des chantiers en cours.
+    let cursor = ACTIVE_BUILDS.length ? Math.max(...ACTIVE_BUILDS.map(b=>b.end)) : now;
+    h+=plan.map(p=>{
+      const start=cursor; cursor+=p.time;
+      const eta=start-now;
+      const timer = eta>0.5 ? `<span class="timer">démarre dans ${fmtTimer(eta)}</span>`
+                            : `<span class="timer">prêt à démarrer</span>`;
+      return `<div class="cost">#${p.pos+1} · ${p.name} → niv ${p.target_level} · ${fmtCost(p.cost)} — ${timer}`
+        +((LAST&&LAST.is_own)?` <button style="padding:0 7px;margin-left:4px" title="Annuler"
+           onclick="cancelBuild(${p.pos})">✕</button>`:"")+`</div>`;
+    }).join("");
   }
   box.innerHTML=h+`</div>`;
 }
@@ -1494,8 +1504,11 @@ setInterval(()=>{ if(TAB==="macro"){ loadMacro(); loadDefenders(); } }, 3000);
 setInterval(load,4000); setInterval(loadReports,6000);
 setInterval(updateHeroBadge,7000);
 setInterval(()=>{ if(TAB==="map" && MAP_LOADED) loadMap(); }, 5000);
-// Décompte live de la file de construction ; recharge dès qu'un ordre se termine.
-setInterval(()=>{ if(!ACTIVE_BUILDS.length) return;
+// Décompte live de la file de construction (chantiers actifs + ordres en attente) ;
+// recharge dès qu'un chantier actif se termine (l'état serveur avance alors la file).
+setInterval(()=>{
+  const plan=(LAST&&LAST.build_plan)||[];
+  if(!ACTIVE_BUILDS.length && !plan.length) return;
   const now=Date.now()/1000;
   if(ACTIVE_BUILDS.some(b=>b.end-now<=0)){ ACTIVE_BUILDS=[]; load(); }
   else renderBuilds();

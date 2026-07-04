@@ -454,7 +454,12 @@ def serialize(v: V.Village) -> dict:
         "build_plan": [{"pos": i, "slot": p.slot_index,
                         "name": BLD.get(p.building_id).name,
                         "target_level": p.target_level,
-                        "cost": BLD.get(p.building_id).cost_at(p.target_level)}
+                        "cost": BLD.get(p.building_id).cost_at(p.target_level),
+                        # Durée propre de construction de cet ordre (réduction bâtiment
+                        # principal + vitesse serveur incluses) : l'UI enchaîne ces durées
+                        # pour afficher l'ETA de démarrage sous l'hypothèse « sans attente ».
+                        "time": round(V.build_time(v, BLD.get(p.building_id),
+                                                    p.target_level))}
                        for i, p in enumerate(v.build_plan)],
         "troops": troops, "training": training, "military": military,
         "movements": moves, "market": market, "hero_here": hero_here, "siege": siege,
