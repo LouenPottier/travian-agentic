@@ -546,7 +546,12 @@ def tile_detail(x: int, y: int):
     out = {"x": x, "y": y, "kind": t["kind"]}
     if v is not None:
         out["kind"] = "village"
+        pop = 0
+        vv = store.load_village(v["id"])
+        if vv is not None:
+            pop = V.population(vv)
         out["village"] = {"id": v["id"], "name": v["name"], "player": v["player"],
+                          "player_id": v["player_id"], "population": pop,
                           "is_own": v["is_own"], "is_capital": bool(v["is_capital"]),
                           "is_natar": v["tribe"] == int(Tribe.NATARS)}
     elif t["kind"] == "oasis":
@@ -577,6 +582,29 @@ def tile_detail(x: int, y: int):
         out["valley"] = {"layout": t["layout"], "fields": {"bois": w, "argile": c,
                                                            "fer": i, "céréales": cr}}
     return out
+
+
+@app.get("/api/player/{player_id}")
+def player_profile(player_id: int):
+    """Profil public d'un joueur : nom, peuple et liste de ses villages (nom,
+    coordonnées, population). Sert au clic sur un nom de joueur (classement / carte)."""
+    p = store.get_player(player_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Joueur inconnu.")
+    villages = []
+    for vid in store.player_villages(player_id):
+        vv = store.load_village(vid)
+        if vv is None:
+            continue
+        villages.append({"id": vv.id, "name": vv.name, "x": vv.x, "y": vv.y,
+                         "population": V.population(vv),
+                         "is_capital": bool(vv.is_capital)})
+    villages.sort(key=lambda r: r["population"], reverse=True)
+    return {"id": p["id"], "name": p["name"],
+            "tribe_name": TRIBE_NAMES_FR.get(Tribe(p["tribe"]), str(p["tribe"])),
+            "is_npc": bool(p["is_npc"]),
+            "is_own": player_id == acting_player(),
+            "villages": villages}
 
 
 @app.get("/api/village/{village_id}")

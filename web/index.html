@@ -1077,7 +1077,8 @@ async function openTile(x,y){
   document.getElementById("modalMsg").textContent=""; MAP_TARGET=null;
   if(t.kind==="village"){ const v=t.village;
     T.textContent=`${v.is_own?"★ ":""}${v.name} (${x}|${y})`;
-    let h=`<div class="cost">Joueur : <b>${v.player}</b>${v.is_capital?" · 🏰 capitale":""}</div>
+    let h=`<div class="cost">Joueur : <a href="#" onclick="openPlayer(${v.player_id});return false" style="color:#caa15a"><b>${v.player}</b></a>${v.is_capital?" · 🏰 capitale":""}</div>
+      <div class="cost">👥 Population : <b>${(v.population||0).toLocaleString("fr-FR")}</b></div>
       <div class="opt"><span>${v.is_own?"Ton village":"Village d'un autre joueur"}</span>
       <button onclick="viewVillage(${v.id})">Voir le village</button></div>`;
     if(!v.is_own){ MAP_TARGET={target_id:v.id}; h+=attackForm(); }
@@ -1105,6 +1106,35 @@ async function openTile(x,y){
     L.innerHTML=h;
     loadSettleBox(x,y);
   }
+  document.getElementById("modal").style.display="flex";
+}
+
+// Centre la carte sur (x|y) et bascule sur l'onglet Carte (clic sur un village
+// depuis la liste d'un joueur).
+function mapTo(x,y){ MAP_CX=clampWR(x); MAP_CY=clampWR(y); MAP_LOADED=true;
+  closeModal(); showTab("map"); }
+
+// Profil d'un joueur (clic sur son nom dans le classement ou sur la carte) :
+// liste de ses villages avec coordonnées et population, chacun cliquable → carte.
+async function openPlayer(pid){
+  const p=await (await fetch(`/api/player/${pid}`)).json();
+  if(p.detail) return;
+  const T=document.getElementById("modalTitle"), L=document.getElementById("modalList");
+  MODAL_SLOT=null; document.getElementById("modalPanel").innerHTML="";
+  document.getElementById("modalMsg").textContent=""; MAP_TARGET=null;
+  T.textContent=`${p.is_own?"★ ":""}${p.name}${p.is_npc?" (PNJ)":""}`;
+  let h=`<div class="cost">Peuple : <b>${p.tribe_name}</b> · ${p.villages.length} village(s)</div>`;
+  if(!p.villages.length){ h+=`<div class="cost" style="opacity:.6;margin-top:6px">aucun village</div>`; }
+  else{
+    h+=`<table style="width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;margin-top:6px">
+      <tr style="text-align:left;opacity:.6"><th style="padding:4px 8px">Village</th><th style="padding:4px 8px">Coord.</th><th style="padding:4px 8px;text-align:right">👥 Pop.</th></tr>`;
+    h+=p.villages.map(v=>`<tr style="border-top:1px solid rgba(255,255,255,.08)">
+      <td style="padding:4px 8px"><a href="#" onclick="mapTo(${v.x},${v.y});return false" style="color:#caa15a">${v.is_capital?"🏰 ":""}${v.name}</a></td>
+      <td style="padding:4px 8px"><a href="#" onclick="mapTo(${v.x},${v.y});return false" style="color:#caa15a">(${v.x}|${v.y})</a></td>
+      <td style="padding:4px 8px;text-align:right">${v.population.toLocaleString("fr-FR")}</td></tr>`).join("");
+    h+=`</table>`;
+  }
+  L.innerHTML=h;
   document.getElementById("modal").style.display="flex";
 }
 
@@ -1332,7 +1362,7 @@ function renderRanking(){
     const npc=r.is_npc?' <small style="opacity:.5">(PNJ)</small>':'';
     return `<tr style="border-top:1px solid rgba(255,255,255,.08);${own}">
       <td style="padding:4px 8px">${medal(r.rank)}</td>
-      <td style="padding:4px 8px">${r.name}${npc}</td>
+      <td style="padding:4px 8px"><a href="#" onclick="openPlayer(${r.player_id});return false" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">${r.name}</a>${npc}</td>
       <td style="padding:4px 8px;opacity:.8">${r.tribe_name}</td>
       <td style="padding:4px 8px;text-align:right">${fmtRankVal(RANK_CAT,r.value)}</td></tr>`;
   }).join("");
