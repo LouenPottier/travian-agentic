@@ -128,6 +128,8 @@ def expansion_status(player_id: int, now: float | None = None) -> dict:
         "next_village": next_village,
         "culture_needed": next_cost,
         "can_settle": (slots - used) > 0 and culture >= next_cost,
+        # Administrateurs formables (mêmes emplacements que les colons, 1 par slot).
+        "chief_allowance": chief_training_allowance(player_id),
     }
 
 
@@ -153,10 +155,7 @@ def settlers_in_progress(player_id: int, current: "V.Village | None" = None) -> 
     le village en cours de modification, dont l'état mémoire n'est pas encore persisté."""
     from app.data.units import UNITS
     total = 0
-    for vid in store.player_villages(player_id):
-        v = current if (current is not None and current.id == vid) else store.load_village(vid)
-        if v is None:
-            continue
+    for v in _resilient_villages(player_id, current):
         idx = settler_index(v.tribe)
         total += v.troops[idx]
         total += sum(o.remaining for o in v.training
@@ -167,13 +166,76 @@ def settlers_in_progress(player_id: int, current: "V.Village | None" = None) -> 
 def settler_training_allowance(player_id: int, current: "V.Village | None" = None) -> int:
     """Nombre de colons que le joueur peut **encore mettre en chantier**.
 
-    = (emplacements d'expansion non encore consommés par des villages fondés ou des
-    colons en vol) × 3, moins les colons déjà formés / en file d'entraînement."""
+    = (emplacements d'expansion non encore consommés par des villages fondés, des
+    colons en vol **ou des administrateurs**) × 3, moins les colons déjà formés / en
+    file d'entraînement. Colons et administrateurs partagent le même vivier
+    d'emplacements (1 emplacement = 3 colons OU 1 administrateur)."""
     free_slots = (expansion_slots(player_id)
                   - (len(store.player_villages(player_id)) - 1)
-                  - store.pending_settlements(player_id))
+                  - store.pending_settlements(player_id)
+                  - chiefs_in_progress(player_id, current))
     capacity = max(0, free_slots) * SETTLERS_NEEDED
     return max(0, capacity - settlers_in_progress(player_id, current))
+
+
+# --- Gate d'entraînement des administrateurs (emplacements d'expansion) --------
+# Même vivier que les colons (support.travian.com « Expansion Slots » : *« Each of
+# these can train 3 settlers or 1 administrator »*), mais un administrateur occupe un
+# **emplacement entier** (là où il faut 3 colons pour en occuper un). Formable en
+# résidence OU palais niv 10+ (cf. village.CHIEF_TRAINERS ; « Trains administrators:
+# Yes » pour les deux — correctif de fidélité T4.6, cf. commentaire village.py).
+def _resilient_villages(player_id: int, current: "V.Village | None" = None) -> list:
+    """Villages du joueur (persistés) avec `current` fusionné (override par id, ou
+    ajout s'il n'est pas encore en base). Robuste à un store non initialisé — cas des
+    tests unitaires à village unique en mémoire, où `store.player_villages` échoue."""
+    out: dict = {}
+    try:
+        for vid in store.player_villages(player_id):
+            v = store.load_village(vid)
+            if v is not None:
+                out[vid] = v
+    except Exception:
+        pass
+    if current is not None:
+        out[current.id] = current
+    return list(out.values())
+
+
+def chiefs_in_progress(player_id: int, current: "V.Village | None" = None) -> int:
+    """Administrateurs (`is_chief`) du joueur occupant un emplacement d'expansion :
+    debout, en vol (attaque) ou en file d'entraînement. Chacun = 1 emplacement."""
+    from app.data.units import UNITS
+    total = 0
+    for v in _resilient_villages(player_id, current):
+        for i, u in enumerate(UNITS[v.tribe]):
+            if u.is_chief:
+                total += v.troops[i] + v.away[i]
+                total += sum(o.remaining for o in v.training if o.unit_index == i)
+    return total
+
+
+def chief_training_allowance(player_id: int, current: "V.Village | None" = None) -> int:
+    """Nombre d'administrateurs que le joueur peut **encore mettre en chantier** =
+    emplacements d'expansion non encore consommés (villages fondés, colons en vol,
+    colons debout/en file arrondis à l'emplacement supérieur, administrateurs déjà
+    en cours). 1 administrateur = 1 emplacement entier."""
+    import math
+    from app.data import formulas as F
+    from app.data.buildings import B as _B
+    villages = _resilient_villages(player_id, current)
+    slots = 0
+    for v in villages:
+        levels = V.building_levels(v)
+        slots += F.slots2(levels.get(_B.RESIDENCE, 0))
+        slots += F.slots3(levels.get(_B.PALACE, 0))
+    try:
+        pending = store.pending_settlements(player_id)
+    except Exception:
+        pending = 0
+    settler_slots = math.ceil(settlers_in_progress(player_id, current) / SETTLERS_NEEDED)
+    used = ((len(villages) - 1) + pending + settler_slots
+            + chiefs_in_progress(player_id, current))
+    return max(0, slots - used)
 
 
 def settled_village(name: str, tribe: Tribe, x: int, y: int, player_id: int,

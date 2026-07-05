@@ -122,8 +122,44 @@ def test_lazy_promotion_is_read_independent():
           f"(champ niv {v1.slots[1].level}, {len(v1.build_plan)} en attente)")
 
 
+def test_no_infinite_loop_on_subresolution_promo_delay():
+    """Anti-régression (bug de gel observé en prod) : quand `plan[0]` est finançable à un
+    délai **sous la résolution du float** — `cursor` est un timestamp Unix (~1,8e9) donc
+    `cursor + delay == cursor` pour un `delay` sub-microseconde — la boucle d'événements de
+    `tick` ne devait jamais avancer ni promouvoir ⇒ **boucle infinie**. Ici on reconstitue
+    ce cas (manque de ressources infime + forte production) et on exige que le tick termine
+    (garde-fou `SIGALRM`) en promouvant l'ordre."""
+    import signal, time
+    v = _village(server_speed=100)
+    for i in range(1, 19):                 # champs niveau 15 ⇒ forte production (rate élevé)
+        v.slots[i].level = 15
+    # Bâtiment bon marché (coût < capacité de stockage, sinon _affordable_delay renvoie None).
+    p = V.PlannedBuild(slot_index=22, building_id=B.CRANNY, target_level=1)
+    cost = V._plan_cost(p)
+    # Manque **infime** (1,2e-6) : `_affordable_delay` renvoie un délai ~1e-8 s, perdu dans la
+    # précision du timestamp Unix (cursor+delay==cursor) ⇒ gelait la boucle avant le correctif.
+    v.resources = [c - 1.2e-6 for c in cost]
+    v.build_plan = [p]
+    v.updated_at = time.time()             # timestamp Unix réel (grand ⇒ ULP ~2,4e-7)
+    assert v.updated_at + V._affordable_delay(v, cost) == v.updated_at   # condition du gel
+
+    signal.signal(signal.SIGALRM, lambda s, f: (_ for _ in ()).throw(AssertionError(
+        "tick n'a pas terminé : régression de la boucle infinie (délai sub-résolution)")))
+    signal.alarm(10)
+    try:
+        V.tick(v, v.updated_at + 3600)     # gros rattrapage
+    finally:
+        signal.alarm(0)
+
+    # L'ordre a démarré et s'est terminé : file vidée, bâtiment posé au niveau 1.
+    assert not v.build_plan, "plan[0] aurait dû être promu (fin de boucle)"
+    assert v.slots[22].level == 1
+    print("✅ pas de boucle infinie sur délai de promotion sous-résolution")
+
+
 if __name__ == "__main__":
     test_overflow_waits_and_pays_on_start()
     test_cancel_before_start()
     test_ladder_same_slot_projects_levels()
     test_lazy_promotion_is_read_independent()
+    test_no_infinite_loop_on_subresolution_promo_delay()

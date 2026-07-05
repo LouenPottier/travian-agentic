@@ -33,7 +33,9 @@ from app.engine import farmlist as FARM
 from app.engine import capital as CAP
 from app.engine import natars as NAT
 from app.engine import artifacts as ART
+from app.engine import rivals as RIV
 from app.engine import ranking as RK
+from app.engine import downtime as DT
 from app.data import items as IT
 from app.engine import situation as SIT
 from app.agents import macro as MACRO
@@ -70,6 +72,14 @@ async def _bind_acting_player(x_acting_player: int | None = Header(default=None)
 
 
 app = FastAPI(title="Travian local — T4.6", dependencies=[Depends(_bind_acting_player)])
+
+
+@app.on_event("startup")
+async def _start_heartbeat() -> None:
+    """Lance le battement de cœur qui garde le serveur « vivant » (cf. engine.downtime) :
+    tant qu'il tourne, on ne confond pas une inactivité avec un arrêt/veille."""
+    import asyncio
+    asyncio.create_task(DT.heartbeat_loop())
 
 SERVER_SPEED = 100  # temps ×100 pour faciliter les tests
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -119,6 +129,13 @@ def _ensure_artifacts() -> None:
     if natar_pid is None:
         return
     ART.spawn_artifact_villages(natar_pid, SERVER_SPEED)
+
+
+def _ensure_rivals() -> None:
+    """Sème les comptes rivaux avancés (légendes + joueurs moyens, cf. engine.rivals)
+    s'ils manquent. Idempotent (marqueur `RIV.SEED_MARKER`) : migration douce des
+    mondes déjà créés, sans toucher au reste."""
+    RIV.spawn_rivals(SERVER_SPEED)
 
 
 # Phase 4 : un vrai compte joué par un agent LLM (posture défensive). Gaulois = meilleure
@@ -224,6 +241,7 @@ def seed_world() -> None:
         _ensure_natars()  # migration : ajoute les Natars aux mondes déjà créés
         _ensure_artifacts()  # migration : ajoute les artefacts (villages Natars dédiés)
         _ensure_agent_player()  # migration : ajoute le joueur IA défensif
+        _ensure_rivals()  # migration : ajoute les empires rivaux avancés (frontière)
         return
     HUMAN_PLAYER_ID = store.create_player("Toi", Tribe.GAULS)
     occupied: set[tuple[int, int]] = set()
@@ -249,9 +267,14 @@ def seed_world() -> None:
     _ensure_natars()
     _ensure_artifacts()
     _ensure_agent_player()
+    _ensure_rivals()
 
 
 seed_world()
+# Détection d'arrêt serveur au démarrage : si le monde existait déjà et que le
+# serveur a été éteint/en veille, on met famine + routes en pause sur le laps
+# écoulé (cf. engine.downtime) avant toute requête.
+DT.absorb()
 
 
 def _tick_player(player_id: int, now: float) -> None:

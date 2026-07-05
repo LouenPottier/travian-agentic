@@ -197,6 +197,14 @@ def init_db() -> None:
             owner_id INTEGER,                -- joueur détenteur (si holder=player)
             village_id INTEGER               -- trésorerie de stockage (si holder=player)
         );
+        -- Clé/valeur global du monde. Sert notamment au **battement de cœur** de la
+        -- détection d'arrêt serveur (cf. engine.downtime) : `last_alive` = dernier
+        -- instant (temps mural) où le serveur tournait ; un grand trou ⇒ arrêt/veille
+        -- pendant lequel famine et routes commerciales sont mises en pause.
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
         """)
         # Migration douce des bases antérieures : colonnes ajoutées au fil des features
         # (oasis : target_x/y avec target_id NULL ; commerce : merchants ; héros au
@@ -228,6 +236,20 @@ def init_db() -> None:
             c.execute("ALTER TABLE tiles ADD COLUMN owner_id INTEGER")
         except sqlite3.OperationalError:
             pass
+
+
+# --- Métadonnées globales (clé/valeur) --------------------------------------
+def get_meta(key: str) -> str | None:
+    with connect() as c:
+        row = c.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_meta(key: str, value) -> None:
+    with connect() as c:
+        c.execute("INSERT INTO meta(key, value) VALUES (?, ?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  (key, str(value)))
 
 
 # --- Cases du monde (carte) --------------------------------------------------
@@ -276,6 +298,14 @@ def set_tile_owner(x: int, y: int, owner_id: int | None) -> None:
     """Rattache (ou détache, owner_id=None) une oasis à un village."""
     with connect() as c:
         c.execute("UPDATE tiles SET owner_id=? WHERE x=? AND y=?", (owner_id, x, y))
+
+
+def set_tile_layout(x: int, y: int, layout: str) -> None:
+    """Force la distribution de champs d'une vallée (seeding : capitale rivale posée
+    sur un 15-cropper quand la carte n'en offre pas un à portée de l'ancrage)."""
+    with connect() as c:
+        c.execute("UPDATE tiles SET layout=? WHERE x=? AND y=? AND kind='valley'",
+                  (layout, x, y))
 
 
 def insert_movement(origin_id, target_id, owner_id, kind, phase, units, arrive_at,
@@ -568,7 +598,8 @@ def insert_artifact(kind: int, size: str, natar_village_id: int) -> int:
         cur = c.execute(
             "INSERT INTO artifacts(kind,size,holder,natar_village_id) "
             "VALUES (?,?,'natar',?)", (kind, size, natar_village_id))
-        return cur.lastrowid
+    _invalidate_artifacts_cache()
+    return cur.lastrowid
 
 
 def artifact_held_by_natar(natar_village_id: int) -> dict | None:
@@ -595,14 +626,34 @@ def capture_artifact(artifact_id: int, owner_id: int, village_id: int) -> None:
         c.execute(
             "UPDATE artifacts SET holder='player', owner_id=?, village_id=?, "
             "natar_village_id=NULL WHERE id=?", (owner_id, village_id, artifact_id))
+    _invalidate_artifacts_cache()
+
+
+# Cache mémoire de `artifacts_owned_by` : cette lecture est sur le **chemin chaud**
+# (`village.troop_upkeep` → `artifacts.crop_multiplier`, appelée à chaque itération de
+# `village.tick`). Sans cache, chaque appel rouvre une connexion SQLite ⇒ des milliers de
+# requêtes quand on ticke un village (surtout au `downtime._freeze` qui rejoue tout le monde)
+# ⇒ **gel**. Les artefacts d'un joueur ne changent qu'à la capture/conquête ⇒ on invalide
+# tout le cache sur ces (rares) écritures. La majorité des joueurs n'en possèdent aucun :
+# on cache aussi la liste **vide** (le cas courant), ce qui supprime la requête pour eux.
+_artifacts_owned_cache: dict[int, list[dict]] = {}
+
+
+def _invalidate_artifacts_cache() -> None:
+    _artifacts_owned_cache.clear()
 
 
 def artifacts_owned_by(owner_id: int) -> list[dict]:
-    """Artefacts capturés (actifs) d'un joueur."""
+    """Artefacts capturés (actifs) d'un joueur (caché, cf. `_artifacts_owned_cache`)."""
+    cached = _artifacts_owned_cache.get(owner_id)
+    if cached is not None:
+        return cached
     with connect() as c:
         rows = c.execute("SELECT * FROM artifacts WHERE holder='player' AND owner_id=? "
                          "ORDER BY id", (owner_id,)).fetchall()
-    return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+    _artifacts_owned_cache[owner_id] = result
+    return result
 
 
 def uncaptured_artifacts() -> list[dict]:
@@ -621,6 +672,7 @@ def release_artifacts_of_village(village_id: int) -> None:
     with connect() as c:
         c.execute("UPDATE artifacts SET village_id=NULL WHERE holder='player' "
                   "AND village_id=?", (village_id,))
+    _invalidate_artifacts_cache()
 
 
 def insert_village(v: Village) -> Village:

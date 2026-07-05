@@ -396,12 +396,18 @@ def _projected_levels(v: Village) -> dict[int, int]:
 
 
 # --- Mise à jour paresseuse --------------------------------------------------
-def tick(v: Village, now: float | None = None) -> None:
+def tick(v: Village, now: float | None = None, starve: bool = True) -> None:
     """Avance l'état du village jusqu'à `now`.
 
     Ressources accumulées par segments délimités par les événements (fin de
     construction, sortie d'une unité d'entraînement), car chacun modifie la
     production (un champ amélioré, ou une troupe de plus à nourrir).
+
+    `starve=False` : **famine en pause** — utilisé pour rattraper la portion de
+    temps où le serveur était éteint/en veille (cf. engine.downtime). Sur ce laps
+    les troupes ne consomment pas de blé et ne meurent pas de faim (les routes
+    commerciales, elles aussi en pause, sont censées les nourrir en régime normal) ;
+    tout le reste — production, construction, entraînement — avance normalement.
     """
     now = now or _time.time()
     if now <= v.updated_at:
@@ -443,12 +449,24 @@ def tick(v: Village, now: float | None = None) -> None:
         e_promo = INF
         if (len(v.queue) < v.max_queue and v.build_plan
                 and v.build_plan[0].slot_index not in {o.slot_index for o in v.queue}):
-            delay = _affordable_delay(v, _plan_cost(v.build_plan[0]))
+            _cost = _plan_cost(v.build_plan[0])
+            delay = _affordable_delay(v, _cost)
             if delay is not None:
+                # ⚠️ `cursor` est un timestamp Unix (~1,8e9) : un délai de promotion sous la
+                # **résolution du float** (cursor+delay == cursor) gèlerait la boucle — la
+                # promotion n'est jamais atteinte, le curseur n'avance jamais (boucle infinie
+                # observée sur un gros rattrapage). Dans ce cas le manque de ressources est
+                # négligeable (< production sur un delta imperceptible) ⇒ on le comble et on
+                # promeut **ce tour** (delay=0), garantissant l'avancée.
+                if cursor + delay <= cursor:
+                    for i in range(4):
+                        if v.resources[i] < _cost[i]:
+                            v.resources[i] = _cost[i]
+                    delay = 0.0
                 e_promo = cursor + delay
         e = min(e_static, e_build, e_promo, now)
 
-        _accumulate(v, cursor, e)
+        _accumulate(v, cursor, e, starve)
         cursor = e
 
         # Fins de construction dues à `cursor` (emplacement monté d'un niveau).
@@ -491,7 +509,7 @@ def tick(v: Village, now: float | None = None) -> None:
     v.updated_at = now
 
 
-def _accumulate(v: Village, t0: float, t1: float) -> None:
+def _accumulate(v: Village, t0: float, t1: float, starve: bool = True) -> None:
     if t1 <= t0:
         return
     # Vitesse serveur : le temps s'écoule `server_speed` fois plus vite
@@ -510,6 +528,15 @@ def _accumulate(v: Village, t0: float, t1: float) -> None:
     caps = capacities(v)
     for i in (WOOD, CLAY, IRON):
         v.resources[i] = min(caps[i], max(0.0, v.resources[i] + prod[i] * hours))
+
+    if not starve:
+        # Famine en pause (serveur éteint/en veille, cf. engine.downtime) : sur ce
+        # laps les troupes ne mangent pas (on rajoute leur entretien au blé net) et
+        # ne meurent jamais. Le grenier reste ainsi sain pour la reprise, où les
+        # routes commerciales reprennent le relais.
+        crop = v.resources[CROP] + (prod[CROP] + troop_upkeep(v)) * hours
+        v.resources[CROP] = min(caps[CROP], max(0.0, crop))
+        return
 
     # Céréales : si le grenier se vide alors que la production nette reste
     # négative, les troupes meurent de faim (cf. _starve).
@@ -544,10 +571,25 @@ def _starve(v: Village) -> None:
     # restent donc exposées à la famine une fois rentrées.
     surplus = gross_production(v)[CROP] - population(v)
     target = max(0.0, surplus)
-    while troop_upkeep(v) > target and any(v.troops):
-        idx = max((i for i, n in enumerate(v.troops) if n > 0),
+    # ⚠️ Perf : `troop_upkeep(v)` fait une **requête SQLite** (crop_multiplier, artefacts)
+    # à chaque appel. L'appeler dans la boucle = O(troupes retirées) requêtes ⇒ **gel** sur
+    # une grosse armée (des dizaines de milliers d'unités à sacrifier). On précalcule donc,
+    # UNE fois : le coût d'entretien par type (`per`) et le multiplicateur d'artefact
+    # (`mult`), puis on suit l'entretien courant **incrémentalement** en arithmétique pure —
+    # exactement la même valeur que `troop_upkeep` (troupes stationnées + en vol, ×mult
+    # arrondi), sans I/O dans la boucle.
+    n = len(v.troops)
+    per = [unit_upkeep(v, i) for i in range(n)]
+    mult = 1.0
+    raw = sum((v.troops[i] + v.away[i]) * per[i] for i in range(n))
+    if raw and v.player_id is not None:
+        from app.engine import artifacts as ART
+        mult = ART.crop_multiplier(v)
+    while round(raw * mult) > target and any(v.troops):
+        idx = max((i for i in range(n) if v.troops[i] > 0),
                   key=lambda i: v.troops[i] * units[i].upkeep)
         v.troops[idx] -= 1
+        raw -= per[idx]
 
 
 # --- Construction ------------------------------------------------------------
@@ -791,12 +833,18 @@ GREAT_COST_MULT = 3
 
 # Colons & chefs (administrateurs) : dans units.py leur `producer` est la résidence,
 # mais le vrai Travian impose des règles distinctes (kirilloid ne chiffre pas ces unités) :
-#  - **colons** : formables en résidence OU palais, à partir du **niveau 10** (le niveau
-#    qui débloque le 1ᵉʳ emplacement d'expansion — cf. F.slots2/slots3, expansion.py) ;
-#  - **chefs/sénateurs** : formables **uniquement au palais** (jamais à la résidence),
-#    à partir du niveau 10. La résidence sert à fonder des villages, pas à les conquérir.
+#  - **colons** ET **chefs/administrateurs** : formables en **résidence OU palais**, à
+#    partir du **niveau 10** (le niveau qui débloque le 1ᵉʳ emplacement d'expansion —
+#    cf. F.slots2/slots3, expansion.py). ⚠️ Correctif de fidélité T4.6 : la résidence
+#    forme bel et bien les administrateurs (recoupé **support.travian.com** « The Palace,
+#    Residence and Command Center » : Résidence → *« Trains administrators: Yes »*). La
+#    croyance « chefs = palais uniquement » venait de la Travian 3.6, fausse en T4.6.
+#  - **Un emplacement d'expansion vaut 3 colons OU 1 administrateur** (support.travian.com
+#    « Expansion Slots » : *« Each of these can train 3 settlers or 1 administrator. You
+#    also need at least one free expansion slot »*) : former un chef consomme un
+#    emplacement (comme 3 colons), cf. `expansion.chief_training_allowance`.
 SETTLER_TRAINERS = (B.RESIDENCE, B.PALACE)
-CHIEF_TRAINERS = (B.PALACE,)
+CHIEF_TRAINERS = (B.RESIDENCE, B.PALACE)
 EXPANSION_MIN_LEVEL = 10
 
 # Seuls caserne/écurie/atelier (et leurs « grandes » variantes) réduisent le temps
@@ -894,6 +942,20 @@ def enqueue_training(v: Village, building_id: int, unit_index: int, count: int,
             if count > allowance:
                 raise BuildError(f"Emplacements d'expansion : {allowance} colon(s) "
                                  f"au maximum (3 par emplacement libre).")
+        elif unit.is_chief:
+            # Un administrateur occupe un emplacement d'expansion dès l'entraînement,
+            # au même titre que 3 colons (support.travian.com « Expansion Slots » :
+            # 1 emplacement = 3 colons OU 1 administrateur).
+            from app.engine import expansion as EXP
+            allowance = EXP.chief_training_allowance(v.player_id, current=v)
+            if allowance <= 0:
+                raise BuildError("Aucun emplacement d'expansion libre : un "
+                                 "administrateur en occupe un (résidence niv 10/20, "
+                                 "palais niv 10/15/20 ; 1 emplacement = 3 colons OU "
+                                 "1 administrateur).")
+            if count > allowance:
+                raise BuildError(f"Emplacements d'expansion : {allowance} "
+                                 f"administrateur(s) au maximum (1 par emplacement).")
     elif unit.producer != base_producer(building_id):
         raise BuildError("Cette unité ne se forme pas ici.")
     if needs_research(v, unit_index) and not v.research[unit_index]:
@@ -930,6 +992,11 @@ RESEARCH_PRODUCERS = (B.BARRACKS, B.STABLES, B.WORKSHOP)
 
 def needs_research(v: Village, unit_index: int) -> bool:
     u = UNITS[v.tribe][unit_index]
+    # Le chef/sénateur/chef de clan (`is_chief`) se recherche aussi à l'académie
+    # (niveau 20, cf. units.REQUIREMENTS) avant de pouvoir être formé au palais —
+    # vrai Travian Legends T4. Le colon (`is_settler`), lui, ne se recherche pas.
+    if u.is_chief:
+        return True
     return u.producer in RESEARCH_PRODUCERS and unit_index != 0
 
 
@@ -977,7 +1044,12 @@ def enqueue_research(v: Village, unit_index: int, now: float | None = None) -> R
         raise BuildError("Cette unité ne se recherche pas.")
     if v.research[unit_index] or any(r.unit_index == unit_index for r in v.research_queue):
         raise BuildError("Recherche déjà effectuée ou en cours.")
-    if building_levels(v).get(units[unit_index].producer, 0) < 1:
+    # Le chef (`is_chief`, producer = résidence) se forme en réalité au **palais**
+    # (résidence ⇄ palais exclusifs) : on ne lui applique pas le contrôle « bâtiment
+    # producteur présent ». Sa recherche est gardée par l'académie 20 (REQUIREMENTS)
+    # et son entraînement par le palais niveau 10 (cf. enqueue_training).
+    if not units[unit_index].is_chief \
+            and building_levels(v).get(units[unit_index].producer, 0) < 1:
         raise BuildError("Bâtiment producteur de l'unité absent.")
     # Prérequis de niveau (académie + bâtiment producteur), vrai Travian : la cavalerie
     # avancée exige une écurie de plus en plus haute, etc. (cf. units.REQUIREMENTS).
@@ -1016,13 +1088,15 @@ def upgrade_time(v: Village, unit_index: int, target_level: int) -> float:
 
 def upgradable_units(v: Village) -> list[tuple[int, Unit]]:
     """Unités améliorables : unités de combat de la tribu dont le bâtiment producteur
-    est construit (on n'améliore pas les colons)."""
+    est construit **et** qui ont été recherchées (vrai Travian : la forge n'améliore
+    qu'une unité déjà débloquée en académie ; les unités de base — index 0 — n'ont pas
+    besoin de recherche). On n'améliore ni les colons ni les chefs (administrateurs)."""
     levels = building_levels(v)
     out = []
     for i, u in enumerate(UNITS[v.tribe]):
-        if u.is_settler or u.producer < 0:
+        if u.is_settler or u.is_chief or u.producer < 0:
             continue
-        if levels.get(u.producer, 0) >= 1:
+        if levels.get(u.producer, 0) >= 1 and is_researched(v, i):
             out.append((i, u))
     return out
 
@@ -1035,8 +1109,13 @@ def enqueue_upgrade(v: Village, unit_index: int, now: float | None = None) -> Up
         raise BuildError("Forge requise pour améliorer les unités.")
     units = UNITS[v.tribe]
     if not (0 <= unit_index < len(units)) or units[unit_index].is_settler \
-            or units[unit_index].producer < 0:
+            or units[unit_index].is_chief or units[unit_index].producer < 0:
         raise BuildError("Cette unité ne s'améliore pas.")
+    # Vrai Travian : la forge n'améliore qu'une unité déjà recherchée en académie
+    # (les unités de base — index 0 — ne nécessitent pas de recherche).
+    if not is_researched(v, unit_index):
+        raise BuildError(f"{units[unit_index].name} : recherche en académie requise "
+                         f"avant d'améliorer en forge.")
     if any(u.unit_index == unit_index for u in v.upgrade_queue):
         raise BuildError("Amélioration déjà en cours pour cette unité.")
     target = v.upgrades[unit_index] + 1

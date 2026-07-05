@@ -757,7 +757,12 @@ _PROCESS_LOCK = threading.Lock()
 def process_due(now: float | None = None) -> int:
     """Traite tous les mouvements arrivés à échéance. Renvoie le nombre traité."""
     now = now or _time.time()
+    from app.engine import downtime as DT
     with _PROCESS_LOCK:
+        # Arrêt/veille du serveur : famine + routes en pause sur le laps écoulé
+        # AVANT de rattraper les mouvements (cf. engine.downtime). Import paresseux
+        # (downtime importe village ; on évite tout cycle à l'import du module).
+        DT.absorb(now)
         return _process_due_locked(now)
 
 

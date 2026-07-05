@@ -27,12 +27,38 @@ UI web jouable + API JSON pour des agents. Voir `README.md` pour le détail et l
   par `tests/test_buildings.test_research_requires_building_levels`) : chaque unité non-basique exige
   un **niveau d'académie ET de bâtiment producteur** minimal (cavalerie avancée → écurie de plus en
   plus haute : Legati/éclaireur écurie 1, tier 2 écurie 3, etc. jusqu'à écurie 10 + académie 15 pour
-  Caesaris/Haeduan ; siège : atelier 1 + académie 10, catapulte atelier 10 + académie 15). ⚠️
+  Caesaris/Haeduan ; siège : atelier 1 + académie 10, catapulte atelier 10 + académie 15 ;
+  **chef/sénateur/chef de clan** (`is_chief`, index 8) → **académie 20**, cf. ci-dessous). ⚠️
   **Kirilloid muet** (champ `r` jamais rempli) → valeurs = **vrai Travian Legends T4** ; extrémités
   cavalerie (écurie 1 / écurie 10) recoupées en direct sur `travian.fandom.com` (Equites Legati,
   Equites Caesaris), paliers intermédiaires = progression canonique Legends (à reconfirmer cellule
-  par cellule si l'infobox wiki redevient fetchable). La **forge** ne gate que par le niveau de forge
-  (plafond d'amélioration), pas par ces prérequis — comportement laissé tel quel faute de source.
+  par cellule si l'infobox wiki redevient fetchable).
+- **Chef (administrateur) = recherche académie 20** (`village.needs_research` renvoie `True` pour
+  `is_chief` + `units.REQUIREMENTS[..][8] = {ACADEMY: 20}`, verrouillé par
+  `tests/test_buildings.test_chief_requires_academy_research`) : le sénateur/chef/chef de clan se
+  **recherche à l'académie niveau 20** avant d'être **formable en résidence OU au palais** (niv 10+) — il
+  n'était auparavant gardé que par le palais 10, disponible d'emblée. Le contrôle « bâtiment producteur
+  présent » de `enqueue_research` est **sauté** pour le chef (son `producer` = résidence). Recoupé
+  `travian.fandom.com` « Senator/Chief/Chieftain » (Academy 20). Le **colon** (`is_settler`), lui, ne se
+  recherche pas.
+- ⚠️ **Correctif de fidélité T4.6 — les administrateurs se forment en RÉSIDENCE aussi, pas seulement
+  au palais** (`village.CHIEF_TRAINERS = (RESIDENCE, PALACE)`, verrouillé par
+  `tests/test_buildings.test_settler_chief_training_gating`). L'ancien code les réservait au **palais
+  uniquement** avec la justification « la résidence sert à fonder, pas à conquérir » : **faux en T4.6**
+  (croyance héritée de la Travian 3.6). **support.travian.com** « The Palace, Residence and Command
+  Center » liste la **Résidence → « Trains administrators: Yes »**. En outre, **un emplacement
+  d'expansion vaut 3 colons OU 1 administrateur** (support.travian.com « Expansion Slots » : *« Each of
+  these can train 3 settlers or 1 administrator. You also need at least one free expansion slot »*) :
+  former un chef **consomme un emplacement** (vivier partagé avec les colons), gardé par
+  `expansion.chief_training_allowance`/`chiefs_in_progress` et `settler_training_allowance` (qui
+  soustrait désormais les chefs), verrouillé par `tests/test_expansion.test_chief_training_needs_slot`.
+  La culture reste vérifiée **à la conquête** (comme le colon à l'envoi), pas à l'entraînement.
+- **Forge : recherche préalable exigée** (`village.enqueue_upgrade`/`upgradable_units` filtrent par
+  `is_researched`, verrouillé par `tests/test_buildings.test_forge_requires_research`) : on n'améliore
+  **qu'une unité déjà débloquée en académie** (les unités de base — index 0 — n'exigent pas de
+  recherche). La forge continue de plafonner l'amélioration par **son propre niveau** ; s'y ajoute
+  désormais ce gate de recherche (chefs et colons restent **non améliorables** en forge). Vrai Travian
+  (la forge n'affiche que les unités recherchées).
 - Le **combat** est validé contre les vecteurs de `t4/combat.spec.ts` (`tests/test_combat.py`) :
   ne pas régresser. Idem `tests/test_raid.py` pour le cycle d'attaque.
 
@@ -253,7 +279,8 @@ Phase 3 en cours (livrée incrémentalement) :
   (=25) et la non-destruction des renforts stationnés ailleurs = **approximations documentées**.
   Bonus **+5 %/chef de grande fête** branché (cf. hôtel de ville ci-dessous). UI : badge 🏳️ loyauté dans
   l'en-tête + récap loyauté/conquête dans les rapports off/déf (les chefs s'envoient comme des
-  troupes via le rassemblement). Les administrateurs s'entraînent **au palais niv 10+** (déjà géré).
+  troupes via le rassemblement). Les administrateurs s'entraînent **en résidence ou au palais niv 10+**
+  (correctif de fidélité T4.6, cf. puce dédiée ci-dessus ; 1 emplacement d'expansion = 3 colons OU 1 chef).
 - ✅ **Hôtel de ville / célébrations** (`app/engine/celebration.py`, verrouillé par
   `tests/test_celebration.py`) : **petite fête** (hôtel de ville niv 1+) et **grande fête**
   (niv 10+) générant des **points de culture**. Coût **fixe** + **durée par niveau** d'hôtel
@@ -329,7 +356,38 @@ Phase 3 en cours (livrée incrémentalement) :
   `POST …/build/cancel/{pos}` annule ; `serialize` expose `build_plan` + par emplacement `planned`/
   `projected_level`/`can_queue`. UI : bouton « ➕ Enfiler → niv N », liste « 🕑 En file » (avec ✕) sous
   les chantiers, marqueur 🕑 sur les tuiles. ⚠️ File **en mémoire** persistée avec le village (survit au
-  reload, contrairement aux registres d'agents).
+  reload, contrairement aux registres d'agents). ⚠️ **Bug corrigé (boucle infinie de `tick`)** : `cursor`
+  est un timestamp Unix (~1,8e9) ; une promotion « finançable dans δ » avec δ **sous la résolution du
+  float** (`cursor+δ == cursor`, manque de ressources ~1e-6) figeait la boucle d'événements (jamais
+  d'avancée ni de promotion) — exposé par un gros rattrapage (grand trou ×vitesse). Corrigé dans
+  `village.tick` : si `cursor+delay <= cursor`, on comble le manque négligeable et on promeut ce tour
+  (progrès garanti). Verrou : `test_build_queue.test_no_infinite_loop_on_subresolution_promo_delay`.
+- ✅ **Perf du chemin chaud de `tick`** (grosses armées / rejeu de villages) : (a) `village._starve`
+  retirait les unités **une par une** en rappelant `troop_upkeep` (→ requête SQLite `crop_multiplier`)
+  à chaque unité ⇒ gel sur une armée de dizaines de milliers ; réécrit en **arithmétique pure**
+  (coûts par unité + multiplicateur d'artefact calculés une fois). (b) `store.artifacts_owned_by` est
+  **caché** (invalidé sur capture/conquête d'artefact) : c'était une connexion SQLite **par appel** de
+  `crop_multiplier`, sur le chemin `net_production`→`troop_upkeep` appelé à chaque itération de `tick`.
+  (c) `downtime._freeze` ne rejoue que les villages **exposés à la famine** (garnison non vide + blé net
+  < 0) ⇒ redémarrage borné (écarte les villages à longue file, coûteux et sans risque de famine).
+- ✅ **Peuplement rival avancé** (`app/engine/rivals.py`, verrouillé par `tests/test_rivals.py`) :
+  carte **agrandie à `WORLD_RADIUS=150`** (301×301 ≈ 90 k cases, agrandissement **non
+  destructif** : `INSERT OR IGNORE` + terrain déterministe) pour loger des **empires rivaux
+  frontaliers**. `spawn_rivals` sème (idempotent, marqueur `SEED_MARKER="Auguste"`) **3 légendes**
+  (Auguste/Romains, Vercingétorix/Gaulois, Arminius/Teutons — **~10 villages**, capitale sur un
+  **15-cropper (1-1-1-15) champs niveau 20**, tous bâtiments niveau max, **armée gigantesque
+  ~50 k troupes**) et **5 joueurs moyens** (3-4 villages, niveaux intermédiaires, armées modestes),
+  chacun avec un **héros aguerri** + des **routes commerciales secondaires → capitale** (blé). Placés
+  en `is_npc=True` (PNJ de peuplement, non pilotés) mais **de tribu jouable** ⇒ **attaquables,
+  pillables et conquérables** (tri du classement par population/armée mené par les légendes). ⚠️
+  **Fidélité** : ce sont des **choix de peuplement** (qui/combien/où/composition d'armée), au même
+  statut que le seeding Natars / joueur IA ; les *valeurs de jeu* restent celles des tables kirilloid
+  (on ne fait que **poser un état** que le moteur produit). **Dimensionnement « armée max tenable »** :
+  la famine (`village._starve`) est ancrée sur la production **du village hôte**, donc l'armée
+  stationnée est calée à **≈ 0,9 × (blé brut − population)** ⇒ énorme sur un 15-cropper niv 20
+  (mill+boulangerie +50 %) **et sans famine** ; le blé reçu par commerce **remplit le grenier** mais
+  ne relève pas ce plafond (limitation documentée du modèle paresseux) ⇒ les routes = **ravitaillement
+  tampon/RP**. Câblé dans `main.seed_world` via `_ensure_rivals` (migration douce).
 - ⬜ **Combat héros — affinages** : pas encore de monture→cavalerie en combat, ni de prise en
   compte des objets de vitesse sur la durée de trajet de l'armée. À raffiner.
 
@@ -488,6 +546,25 @@ Par ordre de rentabilité recommandé :
 
 > Note : la **famine** est déjà faite (`village.py._starve` : grenier vide + prod de blé négative →
 > mort de troupes), ne pas la relister comme manquante.
+
+- ✅ **Pause famine + routes pendant les arrêts serveur** (`app/engine/downtime.py`, param
+  `village.tick(starve=…)`, verrouillé par `tests/test_downtime.py`) — **choix de dev assumé**
+  (« dans le vrai Travian le serveur ne s'éteint jamais ») : la sim est paresseuse, donc un
+  redémarrage après un long arrêt rattrapait tout d'un coup ⇒ **famines fantômes** (l'armée d'un
+  village au blé net négatif mourait sur tout le trou alors que les **routes commerciales**
+  l'auraient nourrie) et routes qui envoyaient une **cargaison de rattrapage**. On met **uniquement**
+  ces deux mécaniques en pause sur le laps d'arrêt : **production, file de construction et
+  entraînement continuent** (les bâtiments se montent). Détection = **battement de cœur en temps
+  mural réel** (`meta.last_alive`, table `meta`, rafraîchi par une tâche de fond
+  `heartbeat_loop` **tant que le process tourne** — ce qui distingue « serveur actif mais inactif »
+  de « éteint/en veille » ; ⚠️ **pas** le `now` de *jeu* qui peut sauter sans arrêt réel). Un trou
+  mural > `GRACE` (120 s) ⇒ `absorb` rejoue **tous** les villages `tick(…, starve=False)` (les troupes
+  **ne mangent pas** et ne meurent pas ⇒ grenier sain pour la reprise) — **y compris les rivaux**
+  (`engine.rivals`, `is_npc=True` mais **tribu jouable** donc affamables ; Nature/Natars déjà immunisés
+  par `_starve`) et fait **glisser**
+  `next_run` des routes échues au prochain créneau futur (reprise, sans rafale). Branché en tête de
+  `movement.process_due` (import paresseux, sous `_PROCESS_LOCK`) + au démarrage de `main` + tâche de
+  fond `@app.on_event("startup")`.
 
 ## Phase 4 — agents LLM (en cours)
 - ✅ **Macros pilotées par Claude Code** (`app/agents/{tools,macro}.py`, endpoints

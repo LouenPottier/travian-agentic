@@ -137,7 +137,11 @@ UNITS: dict[Tribe, list[Unit]] = {
 # étant bloqué dans la session d'implémentation, seules les extrémités cavalerie ont pu
 # être recoupées en direct ; à reconfirmer cellule par cellule si l'infobox devient
 # accessible. Clé = id de bâtiment, valeur = niveau requis. L'unité d'index 0 (1ʳᵉ de
-# la caserne) et les unités de résidence/palais (colon/chef) n'ont pas de prérequis ici.
+# la caserne) et le colon (résidence/palais) n'ont pas de prérequis ici.
+#   - **Chef/sénateur/chef de clan** (index 8, `is_chief`) : **Académie niveau 20** requis
+#     pour la recherche (vrai Travian Legends T4 — l'administrateur se recherche à l'académie,
+#     recoupé travian.fandom.com « Senator/Chief/Chieftain » : Academy 20). L'entraînement,
+#     lui, reste réservé au **palais niveau 10+** (cf. `village.CHIEF_TRAINERS`/`EXPANSION_MIN_LEVEL`).
 REQUIREMENTS: dict[Tribe, dict[int, dict[int, int]]] = {
     Tribe.ROMANS: {
         1: {B.ACADEMY: 1},                       # Prétorien
@@ -147,6 +151,7 @@ REQUIREMENTS: dict[Tribe, dict[int, dict[int, int]]] = {
         5: {B.ACADEMY: 15, B.STABLES: 10},       # Equites Caesaris
         6: {B.ACADEMY: 10, B.WORKSHOP: 1},       # Bélier
         7: {B.ACADEMY: 15, B.WORKSHOP: 10},      # Catapulte à feu
+        8: {B.ACADEMY: 20},                      # Sénateur (chef)
     },
     Tribe.TEUTONS: {
         1: {B.ACADEMY: 1},                       # Lancier
@@ -156,6 +161,7 @@ REQUIREMENTS: dict[Tribe, dict[int, dict[int, int]]] = {
         5: {B.ACADEMY: 5,  B.STABLES: 5},        # Cavalier teuton
         6: {B.ACADEMY: 10, B.WORKSHOP: 1},       # Bélier
         7: {B.ACADEMY: 15, B.WORKSHOP: 10},      # Catapulte
+        8: {B.ACADEMY: 20},                      # Chef
     },
     Tribe.GAULS: {
         1: {B.ACADEMY: 1},                       # Épéiste
@@ -165,6 +171,7 @@ REQUIREMENTS: dict[Tribe, dict[int, dict[int, int]]] = {
         5: {B.ACADEMY: 15, B.STABLES: 10},       # Haeduan
         6: {B.ACADEMY: 10, B.WORKSHOP: 1},       # Bélier
         7: {B.ACADEMY: 15, B.WORKSHOP: 10},      # Catapulte de guerre
+        8: {B.ACADEMY: 20},                      # Chef de clan
     },
 }
 

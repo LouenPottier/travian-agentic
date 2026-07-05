@@ -198,6 +198,44 @@ def test_settler_training_needs_slot():
     print("✅ colons en file comptent dans l'occupation des emplacements")
 
 
+def test_chief_training_needs_slot():
+    """Vrai Travian (support.travian.com « Expansion Slots ») : un administrateur occupe
+    un emplacement d'expansion dès l'entraînement — **1 emplacement = 3 colons OU 1
+    administrateur** (vivier partagé). Et la **résidence** (pas seulement le palais) forme
+    les administrateurs (correctif de fidélité T4.6). Résidence niv 10 = 1 emplacement."""
+    pid, vid = setup()
+    now = time.time()
+    v = store.load_village(vid)
+    cidx = next(i for i, u in enumerate(V.UNITS[Tribe.GAULS]) if u.is_chief)
+    v.research[cidx] = 1                      # chef recherché (académie 20, cf. test dédié)
+    # Entrepôt/grenier hauts : sinon le stockage plafonne les ressources sous le coût du chef.
+    v.slots[21] = V.Slot(building_id=B.WAREHOUSE, level=20)
+    v.slots[22] = V.Slot(building_id=B.GRANARY, level=20)
+    v.resources = [80000.0] * 4
+    store.save_village(v); v = store.load_village(vid)
+
+    # La résidence forme bien l'administrateur (fidélité T4.6, pas seulement le palais).
+    assert cidx in {i for i, _ in V.trainable_units(v, B.RESIDENCE)}
+    # 1 emplacement libre → 1 administrateur OU 3 colons formables.
+    assert EXP.chief_training_allowance(pid, current=v) == 1
+    assert EXP.settler_training_allowance(pid, current=v) == 3
+
+    # Former le chef → l'emplacement est occupé : plus ni chef ni colon (vivier partagé).
+    V.enqueue_training(v, B.RESIDENCE, cidx, 1, now)
+    store.save_village(v); v = store.load_village(vid)
+    assert EXP.chief_training_allowance(pid, current=v) == 0
+    assert EXP.settler_training_allowance(pid, current=v) == 0
+
+    # En former un 2ᵉ → refus (garde-fou avant le débit du coût).
+    try:
+        V.enqueue_training(v, B.RESIDENCE, cidx, 1, now)
+        assert False, "2ᵉ administrateur sans emplacement libre aurait dû échouer"
+    except V.BuildError as e:
+        assert "emplacement" in str(e).lower(), e
+        print("✅ refus attendu (emplacement d'expansion occupé par l'administrateur) :", e)
+    print("✅ chef : résidence 10 = 1 emplacement = 1 administrateur (partagé avec les colons)")
+
+
 def main():
     test_culture_accumulation()
     test_settle_flow()
@@ -205,6 +243,7 @@ def main():
     test_pending_settlement_reserves_slot()
     test_failed_settlement_frees_slot()
     test_settler_training_needs_slot()
+    test_chief_training_needs_slot()
     print("\n✅ Expansion (culture / colons / fondation) validée")
 
 

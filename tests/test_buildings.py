@@ -276,8 +276,10 @@ def test_mansion_trapper_build_time():
 
 
 def test_settler_chief_training_gating():
-    """Colons/chefs : le vrai Travian exige le bâtiment au **niveau 10**, et les chefs
-    ne se forment qu'au **palais** (jamais à la résidence)."""
+    """Colons/chefs : le vrai Travian exige le bâtiment au **niveau 10**, et les
+    administrateurs se forment en **résidence OU palais** (correctif de fidélité T4.6 —
+    la croyance « chefs = palais uniquement » venait de la Travian 3.6 ; recoupé
+    support.travian.com : Résidence → « Trains administrators: Yes »)."""
     from app.data.buildings import B as Bb
 
     def mk(bid, lvl):
@@ -294,23 +296,87 @@ def test_settler_chief_training_gating():
     assert V.trainable_units(mk(Bb.RESIDENCE, 9), Bb.RESIDENCE) == []
     assert V.trainable_units(mk(Bb.PALACE, 9), Bb.PALACE) == []
 
-    # Niveau 10 : résidence → colon seul ; palais → colon + chef.
+    # Niveau 10 : résidence ET palais → colon + chef (les deux forment les administrateurs).
     res10 = [i for i, _ in V.trainable_units(mk(Bb.RESIDENCE, 10), Bb.RESIDENCE)]
     pal10 = [i for i, _ in V.trainable_units(mk(Bb.PALACE, 10), Bb.PALACE)]
-    assert res10 == [settler], res10
+    assert settler in res10 and chief in res10, res10
     assert settler in pal10 and chief in pal10, pal10
 
-    # enqueue : refus du colon sous niv 10, refus du chef en résidence, OK au palais.
-    for bid, idx, lvl in [(Bb.RESIDENCE, settler, 9), (Bb.RESIDENCE, chief, 10)]:
-        try:
-            V.enqueue_training(mk(bid, lvl), bid, idx, 1)
-            assert False, "aurait dû échouer"
-        except V.BuildError as e:
-            print("refus attendu :", e)
-    v = mk(Bb.PALACE, 10)
-    o = V.enqueue_training(v, Bb.PALACE, chief, 1, now=v.updated_at)
+    # enqueue : refus du colon sous niv 10 (le chef doit être recherché — cf. test dédié —
+    # donc pas d'enqueue direct ici) ; la résidence forme bien le chef (fidélité T4.6).
+    try:
+        V.enqueue_training(mk(Bb.RESIDENCE, 9), Bb.RESIDENCE, settler, 1)
+        assert False, "colon sous niv 10 aurait dû échouer"
+    except V.BuildError as e:
+        print("refus attendu (niv < 10) :", e)
+    v = mk(Bb.RESIDENCE, 10)   # 1 emplacement d'expansion, aucun autre village
+    v.research[chief] = 1      # le chef doit être recherché en académie 20 (cf. test dédié)
+    o = V.enqueue_training(v, Bb.RESIDENCE, chief, 1, now=v.updated_at)
     assert o.per_unit == units[chief].train_time / v.server_speed   # facteur 1.0, pas de crash
-    print("✅ colons/chefs : niveau 10 requis, chefs réservés au palais")
+    print("✅ colons/chefs : niveau 10 requis, administrateurs formables résidence OU palais")
+
+
+def test_chief_requires_academy_research():
+    """Vrai Travian : le chef/sénateur/chef de clan se **recherche à l'académie (niveau 20)**
+    avant d'être formable au palais. Recoupé travian.fandom.com « Senator/Chief/Chieftain »."""
+    now = time.time()
+    v = _gaul(resources=500000.0, PALACE=10, ACADEMY=20)
+    chief = next(i for i, u in enumerate(V.UNITS[Tribe.GAULS]) if u.is_chief)
+
+    # Le chef relève désormais de l'académie et figure dans la liste à rechercher.
+    assert V.needs_research(v, chief) and not v.research[chief]
+    assert chief in {i for i, _ in V.researchable_units(v)}
+
+    # Sans recherche, l'entraînement au palais est refusé.
+    try:
+        V.enqueue_training(v, B.PALACE, chief, 1, now)
+        assert False, "chef entraînable sans recherche aurait dû échouer"
+    except V.BuildError as e:
+        print("refus attendu (chef non recherché) :", e)
+
+    # Académie trop basse (< 20) : recherche refusée.
+    v_low = _gaul(PALACE=10, ACADEMY=15)
+    assert not V.reqs_met(v_low, chief)
+    try:
+        V.enqueue_research(v_low, chief, now)
+        assert False, "recherche du chef à l'académie 15 aurait dû échouer"
+    except V.BuildError as e:
+        print("refus attendu (académie < 20) :", e)
+
+    # Académie 20 : recherche possible, puis entraînement débloqué.
+    order = V.enqueue_research(v, chief, now)
+    V.tick(v, order.finish_at + 1)
+    assert v.research[chief] == 1
+    v.resources = [500000.0] * 4  # recharge (le stockage aurait plafonné pendant le tick)
+    V.enqueue_training(v, B.PALACE, chief, 1, order.finish_at + 1)
+    print("✅ chef : recherche académie 20 requise avant entraînement")
+
+
+def test_forge_requires_research():
+    """Vrai Travian : la forge n'améliore qu'une unité **déjà recherchée** en académie
+    (les unités de base — index 0 — n'ont pas besoin de recherche)."""
+    now = time.time()
+    v = _gaul(BARRACKS=3, STABLES=10, ACADEMY=20, SMITHY=5)
+    # Le Haeduan (index 5) n'est pas recherché → pas améliorable.
+    assert V.needs_research(v, 5) and not v.research[5]
+    assert 5 not in {i for i, _ in V.upgradable_units(v)}
+    try:
+        V.enqueue_upgrade(v, 5, now)
+        assert False, "amélioration d'une unité non recherchée aurait dû échouer"
+    except V.BuildError as e:
+        print("refus attendu (forge, non recherché) :", e)
+
+    # L'épéiste de base (index 0, phalange) est améliorable sans recherche.
+    assert not V.needs_research(v, 0)
+    assert 0 in {i for i, _ in V.upgradable_units(v)}
+    V.enqueue_upgrade(v, 0, now)
+
+    # Une fois le Haeduan recherché, il devient améliorable.
+    order = V.enqueue_research(v, 5, now)
+    V.tick(v, order.finish_at + 1)
+    assert 5 in {i for i, _ in V.upgradable_units(v)}
+    V.enqueue_upgrade(v, 5, order.finish_at + 1)
+    print("✅ forge : recherche préalable exigée avant amélioration")
 
 
 def test_demolish():
