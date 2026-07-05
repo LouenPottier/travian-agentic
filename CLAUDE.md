@@ -373,19 +373,30 @@ Phase 3 en cours (livrée incrémentalement) :
 - ✅ **Peuplement rival avancé** (`app/engine/rivals.py`, verrouillé par `tests/test_rivals.py`) :
   carte **agrandie à `WORLD_RADIUS=150`** (301×301 ≈ 90 k cases, agrandissement **non
   destructif** : `INSERT OR IGNORE` + terrain déterministe) pour loger des **empires rivaux
-  frontaliers**. `spawn_rivals` sème (idempotent, marqueur `SEED_MARKER="Auguste"`) **3 légendes**
+  frontaliers**. `spawn_rivals` sème (**additif-idempotent par nom** : crée les rivaux dont le nom
+  n'existe pas encore, saute les présents — ne supprime/modifie **jamais** un joueur/village existant)
+  **~16 rivaux en 3 tiers** (`ALL_RIVALS = CLOSE + MIDS + STRONG + LEGENDS`) : un groupe **`CLOSE`** de
+  voisins **collés au joueur** (Crixus/Marbod/Catilina/Divico, `zone="near"` `dist` ~12-22) + **3 légendes**
   (Auguste/Romains, Vercingétorix/Gaulois, Arminius/Teutons — **~10 villages**, capitale sur un
-  **15-cropper (1-1-1-15) champs niveau 20**, tous bâtiments niveau max, **armée gigantesque
-  ~50 k troupes**) et **5 joueurs moyens** (3-4 villages, niveaux intermédiaires, armées modestes),
-  chacun avec un **héros aguerri** + des **routes commerciales secondaires → capitale** (blé). Placés
-  en `is_npc=True` (PNJ de peuplement, non pilotés) mais **de tribu jouable** ⇒ **attaquables,
-  pillables et conquérables** (tri du classement par population/armée mené par les légendes). ⚠️
-  **Fidélité** : ce sont des **choix de peuplement** (qui/combien/où/composition d'armée), au même
-  statut que le seeding Natars / joueur IA ; les *valeurs de jeu* restent celles des tables kirilloid
-  (on ne fait que **poser un état** que le moteur produit). **Dimensionnement « armée max tenable »** :
-  la famine (`village._starve`) est ancrée sur la production **du village hôte**, donc l'armée
-  stationnée est calée à **≈ 0,9 × (blé brut − population)** ⇒ énorme sur un 15-cropper niv 20
-  (mill+boulangerie +50 %) **et sans famine** ; le blé reçu par commerce **remplit le grenier** mais
+  **15-cropper (1-1-1-15) champs niveau 20**, **armée ~50 k**), **4 « très bons joueurs » (strong)**
+  (Scipion, Brennus, Boudica, Ambiorix — **6-7 villages**, capitale **15-cropper champs 14 ⇒ ~12-14 k**)
+  et **5 joueurs solides (mid)** (Spartacus, Marius, Ariovist, Sylla, Alaric — **4-5 villages**, capitale
+  **9-cropper (3-3-3-9) ⇒ ~2 k**). **De vraies armées sur CHAQUE village** : les **secondaires** sont
+  posés sur des **croppers 9/15** (motif `sec_layouts` imposé, `want_layout` forcé si aucune vallée du
+  type n'est libre à côté) avec une **forte fraction de budget céréalier** ⇒ **≥ ~1 000 troupes** partout
+  (jusqu'à ~3,5 k sur un 15-cropper). Chacun avec un **héros aguerri** + des **routes commerciales
+  secondaires → capitale** (blé). **Placement proche ET loin** (`Rival.zone`) : les légendes restent
+  **frontalières** (`"far"`, ancrées autour de l'origine), strong/mid sont répartis **dans le voisinage
+  du joueur** (`"near"`, ancrés autour de la capitale humaine via `_human_ref`) **et** au loin — le
+  joueur a donc des rivaux puissants à sa porte comme à l'horizon. Placés en `is_npc=True` (PNJ de
+  peuplement, non pilotés) mais **de tribu jouable** ⇒ **attaquables, pillables et conquérables** (tri du
+  classement par population/armée mené par les légendes). ⚠️ **Fidélité** : ce sont des **choix de
+  peuplement** (qui/combien/où/tier/composition d'armée), au même statut que le seeding Natars / joueur
+  IA ; les *valeurs de jeu* restent celles des tables kirilloid (on ne fait que **poser un état** que le
+  moteur produit). **Dimensionnement « armée max tenable »** : la famine (`village._starve`) est ancrée
+  sur la production **du village hôte**, donc l'armée stationnée est calée à **`army_frac × (blé brut −
+  population)`** (frac 0,60–0,90 selon tier/rôle, toujours < 1 ⇒ **blé net ≥ 0, aucune famine**) ⇒ énorme
+  sur un 15-cropper niv 20 (mill+boulangerie +50 %) ; le blé reçu par commerce **remplit le grenier** mais
   ne relève pas ce plafond (limitation documentée du modèle paresseux) ⇒ les routes = **ravitaillement
   tampon/RP**. Câblé dans `main.seed_world` via `_ensure_rivals` (migration douce).
 - ⬜ **Combat héros — affinages** : pas encore de monture→cavalerie en combat, ni de prise en

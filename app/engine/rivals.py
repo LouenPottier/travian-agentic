@@ -161,72 +161,148 @@ def _free_valley(near_x: int, near_y: int, occupied: set[tuple[int, int]],
 # --- Description d'un compte rival (RP) --------------------------------------
 class Rival:
     def __init__(self, name: str, tribe: Tribe, template_key: str, motto: str,
-                 num_villages: int, tier: str, radius: int,
+                 num_villages: int, tier: str, zone: str, dist: int,
                  capital_prefix: str, hero_level: int):
         self.name = name
         self.tribe = tribe
         self.template = ARMY_TEMPLATES[template_key]
         self.motto = motto            # RP : affiché dans le profil / village
         self.num_villages = num_villages
-        self.tier = tier              # "legend" | "mid"
-        self.radius = radius          # anneau d'apparition (loin du centre Natar)
+        self.tier = tier              # "legend" | "strong" | "mid"
+        self.zone = zone              # "near" (autour du joueur) | "far" (frontière)
+        self.dist = dist              # distance à l'ancre de zone (près du joueur / origine)
         self.capital_prefix = capital_prefix
         self.hero_level = hero_level
 
 
-# Empires légendaires (une dizaine de villages, capitale 15-cropper max, armée énorme)
-# + joueurs moyens. Noms & devises = clins d'œil historiques (RP).
+# Trois tiers de rivaux (noms & devises = clins d'œil historiques, RP) :
+#   • **legend** — l'élite : ~10 villages, capitale 15-cropper niv 20, armée ~50 k.
+#   • **strong** — les « très bons joueurs » : ~7 villages, capitale 15-cropper ~12 k.
+#   • **mid**    — les joueurs solides : ~4-5 villages, capitale 9-cropper ~2 k.
+# Chaque tier a **de vraies armées sur CHAQUE village** (secondaires ≥ ~1 000, cf.
+# `_params` : les secondaires sont posés sur des croppers 9/15 avec une forte fraction
+# de budget céréalier). Les légendes restent **loin** (frontière) ; strong et mid sont
+# répartis **près du joueur ET au loin** (`zone`), pour peupler le voisinage proche.
 LEGENDS = [
     Rival("Auguste", Tribe.ROMANS, "rome_off",
           "Imperator Caesar Divi Filius — je trouvai Rome de brique, je la laisse de marbre.",
-          10, "legend", 95, "Roma", 100),
+          10, "legend", "far", 95, "Roma", 100),
     Rival("Vercingétorix", Tribe.GAULS, "gaul_def",
           "Roi des Arvernes — que la Gaule soit un rempart et non une proie.",
-          10, "legend", 115, "Gergovie", 90),
+          10, "legend", "far", 118, "Gergovie", 90),
     Rival("Arminius", Tribe.TEUTONS, "teuton_raid",
           "Le fléau de Teutobourg — trois légions englouties par la forêt.",
-          10, "legend", 135, "Teutobourg", 90),
+          10, "legend", "far", 138, "Teutobourg", 90),
+]
+
+STRONG = [
+    Rival("Scipion l'Africain", Tribe.ROMANS, "rome_off",
+          "Vainqueur de Zama — la patience d'abord, la foudre ensuite.",
+          7, "strong", "near", 42, "Liternum", 65),
+    Rival("Brennus", Tribe.GAULS, "gaul_def",
+          "Vae victis ! — malheur aux vaincus, et gare à mon glaive sur la balance.",
+          7, "strong", "near", 52, "Senones", 60),
+    Rival("Boudica", Tribe.TEUTONS, "teuton_raid",
+          "Reine des Icènes — le feu pour les colonies, la lance pour les légions.",
+          6, "strong", "far", 105, "Camulodunon", 62),
+    Rival("Ambiorix", Tribe.GAULS, "gaul_def",
+          "Prince des Éburons — une légion entière n'est jamais revenue de mes forêts.",
+          6, "strong", "far", 125, "Atuatuca", 58),
 ]
 
 MIDS = [
-    Rival("Scipion l'Africain", Tribe.ROMANS, "rome_off",
-          "Vainqueur de Zama — la patience d'abord, la foudre ensuite.",
-          4, "mid", 80, "Liternum", 40),
-    Rival("Boudica", Tribe.TEUTONS, "teuton_raid",
-          "Reine des Icènes — le feu pour les colonies, la lance pour les légions.",
-          4, "mid", 100, "Camulodunon", 38),
-    Rival("Brennus", Tribe.GAULS, "gaul_def",
-          "Vae victis ! — malheur aux vaincus, et gare à mon glaive sur la balance.",
-          4, "mid", 122, "Senones", 35),
     Rival("Spartacus", Tribe.GAULS, "gaul_def",
           "Le gladiateur rebelle — mieux vaut tomber libre que vivre enchaîné.",
-          3, "mid", 88, "Vésuve", 30),
+          5, "mid", "near", 26, "Vésuve", 40),
+    Rival("Marius", Tribe.ROMANS, "rome_off",
+          "Consul aux sept mandats — j'ai refait la légion à mon image.",
+          5, "mid", "near", 34, "Cereatae", 42),
+    Rival("Ariovist", Tribe.TEUTONS, "teuton_raid",
+          "Roi des Suèves — la Gaule de l'est m'appartient, et je la garde par le fer.",
+          4, "mid", "near", 48, "Magetobriga", 36),
+    Rival("Sylla", Tribe.ROMANS, "rome_off",
+          "Dictateur de Rome — heureux, et sans pitié pour qui me défie.",
+          4, "mid", "far", 92, "Nola", 38),
     Rival("Alaric", Tribe.TEUTONS, "teuton_raid",
           "Roi des Wisigoths — les portes de Rome finiront par céder.",
-          3, "mid", 128, "Noviodunum", 32),
+          4, "mid", "far", 128, "Noviodunum", 34),
 ]
 
+# Rivaux **très proches** du joueur (`zone="near"`, `dist` ~12-22, sous les ~26+ des
+# `MIDS`/`STRONG` near) : de vrais voisins immédiats, à sa porte. Un `strong` (Marbod)
+# pour une menace sérieuse à côté, entouré de mid. Mêmes règles (croppers + armées ≥ ~1 k).
+CLOSE = [
+    Rival("Crixus", Tribe.GAULS, "gaul_def",
+          "Lieutenant de Spartacus — j'ai choisi de mourir l'épée à la main, pas de fuir.",
+          4, "mid", "near", 12, "Garganus", 40),
+    Rival("Marbod", Tribe.TEUTONS, "teuton_raid",
+          "Roi des Marcomans — mon royaume borde le tien, et mes hordes n'attendent qu'un mot.",
+          6, "strong", "near", 16, "Boiohaemum", 58),
+    Rival("Catilina", Tribe.ROMANS, "rome_off",
+          "Conjuré de Rome — puisqu'on me refuse le consulat, je prendrai tout par les armes.",
+          5, "mid", "near", 19, "Faesulae", 42),
+    Rival("Divico", Tribe.GAULS, "gaul_def",
+          "Chef des Helvètes — j'ai déjà fait passer une armée romaine sous le joug.",
+          5, "mid", "near", 22, "Genava", 40),
+]
 
-# Paramètres de développement par tier (capitale vs secondaire).
+# Ordre de peuplement recommandé (le marqueur d'idempotence `Auguste` doit être posé
+# **en dernier**, cf. `spawn_rivals`). Regroupe tous les tiers (les très-proches d'abord).
+ALL_RIVALS = CLOSE + MIDS + STRONG + LEGENDS
+
+
+# Paramètres de développement par tier (capitale vs secondaire). `sec_layouts` = motif
+# de distributions de champs imposé aux secondaires (répété) ⇒ **bonne proportion de
+# croppers 9/15** (`want_layout`, forcé si aucune vallée de ce type n'est libre à côté),
+# pour loger de vraies armées de secondaire (≥ ~1 000).
 def _params(tier: str, is_capital: bool) -> dict:
     if tier == "legend":
-        if is_capital:
+        if is_capital:                             # 15-cropper niv 20 ⇒ ~50 k troupes
             return dict(field_layout="1-1-1-15", field_level=20, center_level=20,
                         wall_level=20, army_frac=0.90)
-        # Secondaire de légende : champs niv 10 (plafond hors capitale), tout niv max,
-        # petite garnison (garde son blé pour ravitailler la capitale par commerce).
-        return dict(field_level=10, center_level=18, wall_level=20, army_frac=0.20)
-    # Mid : niveaux intermédiaires, armées modérées.
+        # Secondaire de légende sur cropper (champs plafonnés à 10 hors capitale) : de
+        # vraies armées (~1-3 k), et un surplus de blé qui ravitaille la capitale (routes).
+        return dict(field_level=10, center_level=18, wall_level=20, army_frac=0.60,
+                    sec_layouts=("1-1-1-15", "3-3-3-9", "3-3-3-9"))
+    if tier == "strong":
+        if is_capital:                             # 15-cropper champs 14 ⇒ ~12 k troupes
+            return dict(field_layout="1-1-1-15", field_level=14, center_level=16,
+                        wall_level=20, army_frac=0.90)
+        return dict(field_level=10, center_level=14, wall_level=15, army_frac=0.85,
+                    sec_layouts=("3-3-3-9", "1-1-1-15", "3-3-3-9", "4-4-4-6"))
+    # Mid : capitale 9-cropper ⇒ ~2 k ; secondaires ~1-1,5 k sur croppers/vallées riches.
     if is_capital:
-        return dict(field_layout="3-3-3-9", field_level=10, center_level=12,
-                    wall_level=12, army_frac=0.65)
-    return dict(field_level=9, center_level=10, wall_level=10, army_frac=0.35)
+        return dict(field_layout="3-3-3-9", field_level=10, center_level=13,
+                    wall_level=12, army_frac=0.90)
+    return dict(field_level=10, center_level=11, wall_level=10, army_frac=0.85,
+                sec_layouts=("3-3-3-9", "4-4-4-6", "3-3-3-9"))
 
 
-def _anchor(index: int, radius: int) -> tuple[int, int]:
-    """Point d'ancrage déterministe sur un anneau (angle réparti par le nombre d'or)."""
+def _anchor(index: int, dist: int, center: tuple[int, int]) -> tuple[int, int]:
+    """Point d'ancrage déterministe autour de `center`, à distance `dist` (angle réparti
+    par le nombre d'or). `center` = origine (frontière) ou position du joueur (voisinage)."""
     angle = 2 * math.pi * (index * 0.61803398875)
-    return int(round(radius * math.cos(angle))), int(round(radius * math.sin(angle)))
+    return (center[0] + int(round(dist * math.cos(angle))),
+            center[1] + int(round(dist * math.sin(angle))))
+
+
+def _human_ref() -> tuple[int, int]:
+    """Position de référence du **voisinage du joueur** (pour les rivaux `zone="near"`).
+    = capitale du premier compte non-PNJ (le joueur humain, créé en premier). Repli sur
+    `HUMAN_START` (60, 60) si aucun humain n'est encore posé (ex. monde de test)."""
+    from app import store
+    for p in store.all_players():
+        if p["is_npc"]:
+            continue
+        vids = store.player_villages(p["id"])
+        cap = next((store.load_village(v) for v in vids
+                    if store.load_village(v).is_capital), None)
+        if cap is not None:
+            return cap.x, cap.y
+        if vids:
+            v = store.load_village(vids[0])
+            return v.x, v.y
+    return (60, 60)
 
 
 def _make_hero(player_id: int, capital_id: int, level: int, tribe: Tribe) -> None:
@@ -242,39 +318,62 @@ def _make_hero(player_id: int, capital_id: int, level: int, tribe: Tribe) -> Non
     HERO.save(h)
 
 
+def _place_valley(near_x: int, near_y: int, occupied: set[tuple[int, int]],
+                  want_layout: str | None) -> tuple[int, int, str] | None:
+    """Trouve une vallée libre proche de la distribution voulue ; si aucune de ce type
+    n'est libre, prend la plus proche et **force** la distribution (comme le fait la
+    capitale 15-cropper). Renvoie `(x, y, layout_effectif)` ou `None`."""
+    from app import store
+    if want_layout is not None:
+        spot = _free_valley(near_x, near_y, occupied, want_layout=want_layout)
+        if spot is not None:
+            return spot[0], spot[1], want_layout
+    spot = _free_valley(near_x, near_y, occupied)
+    if spot is None:
+        return None
+    if want_layout is not None:
+        store.set_tile_layout(spot[0], spot[1], want_layout)
+        return spot[0], spot[1], want_layout
+    t = store.get_tile(spot[0], spot[1])
+    return spot[0], spot[1], t["layout"]
+
+
 def spawn_rivals(server_speed: int) -> list[int]:
-    """Crée (idempotent) les comptes rivaux avancés : légendes + joueurs moyens, avec
-    leurs villages développés, héros, et routes commerciales secondaires → capitale.
-    Renvoie les ids des joueurs créés. Ne fait rien si le marqueur existe déjà."""
+    """Crée (idempotent) les comptes rivaux avancés (3 tiers, ~12 joueurs, proche & loin),
+    avec leurs villages développés, héros, et routes commerciales secondaires → capitale.
+    Renvoie les ids des joueurs **créés à cet appel**.
+
+    **Purement additif** : chaque rival est créé s'il n'existe **pas encore par son nom**,
+    sinon **sauté** (aucune modification/suppression d'un joueur ou village existant). Sur
+    un monde déjà semé, on ne fait qu'**ajouter les rivaux manquants** (ex. de nouveaux
+    noms introduits après coup) ; sur un monde neuf, on crée les 12. L'ancrage `_anchor`
+    utilise l'index **fixe** dans `order` ⇒ chaque rival tombe toujours au même endroit,
+    indépendamment de ceux déjà présents (les collisions sont évitées via `occupied`)."""
     from app import store
     from app.engine import movement as MOV
-    if store.find_player_by_name(SEED_MARKER) is not None:
-        return []
 
     occupied = {(v["x"], v["y"]) for v in store.list_villages()}
     now = _time.time()
     created: list[int] = []
-    # Les légendes en dernier : le marqueur (Auguste) doit clore le seeding pour que
-    # l'idempotence soit correcte même en cas d'interruption → on met MIDS puis LEGENDS,
-    # et à l'intérieur des LEGENDS on garde Auguste en tête (donc créé en premier des
-    # légendes) — pour que le marqueur ne soit posé qu'une fois tout le reste écrit, on
-    # ordonne : MIDS, puis légendes hors-marqueur, puis le marqueur.
-    marker = next(r for r in LEGENDS if r.name == SEED_MARKER)
-    order = MIDS + [r for r in LEGENDS if r.name != SEED_MARKER] + [marker]
+    href = _human_ref()                        # centre du « voisinage proche » du joueur
+    # Le marqueur (`Auguste`) reste ordonné en dernier (compat historique) ; l'idempotence
+    # est désormais garantie **par nom**, donc un seeding interrompu se complète au réappel.
+    marker = next(r for r in ALL_RIVALS if r.name == SEED_MARKER)
+    order = [r for r in ALL_RIVALS if r.name != SEED_MARKER] + [marker]
 
     for ri, rival in enumerate(order):
+        if store.find_player_by_name(rival.name) is not None:
+            continue                           # déjà présent ⇒ on n'y touche pas
         pid = store.create_player(rival.name, rival.tribe, is_npc=True)
-        # Ancrage de l'empire, puis capitale sur un 15-cropper (légende) proche.
-        ax, ay = _anchor(ri, rival.radius)
+        # Ancrage de l'empire : autour du joueur (`near`) ou sur la frontière (`far`).
+        center = href if rival.zone == "near" else (0, 0)
+        ax, ay = _anchor(ri, rival.dist, center)
         cap_params = _params(rival.tier, is_capital=True)
         want = cap_params.pop("field_layout")
-        spot = _free_valley(ax, ay, occupied, want_layout=want)
-        if spot is None:                      # aucun 15-cropper à portée → vallée quelconque
-            spot = _free_valley(ax, ay, occupied)
-            if spot is None:
-                continue
-            store.set_tile_layout(spot[0], spot[1], want)  # on force la distribution
-        cx, cy = spot
+        placed = _place_valley(ax, ay, occupied, want)
+        if placed is None:
+            continue
+        cx, cy, _ = placed
         occupied.add((cx, cy))
         cap = _developed_village(
             f"{rival.capital_prefix}", rival.tribe, cx, cy, pid, server_speed,
@@ -283,19 +382,21 @@ def spawn_rivals(server_speed: int) -> list[int]:
         created.append(pid)
         _make_hero(pid, cap.id, rival.hero_level, rival.tribe)
 
-        # Villages secondaires : autour de la capitale, sur les vraies vallées.
+        # Villages secondaires : autour de la capitale, sur des vallées **croppers** (motif
+        # `sec_layouts` répété ⇒ bonne proportion de 9/15-croppers) avec de vraies armées.
+        sec_params = _params(rival.tier, is_capital=False)
+        sec_layouts = sec_params.pop("sec_layouts", None)
         sec_ids: list[int] = []
         for k in range(2, rival.num_villages + 1):
-            sp = _free_valley(cx + k, cy + (k % 3), occupied)
-            if sp is None:
+            want_sec = sec_layouts[(k - 2) % len(sec_layouts)] if sec_layouts else None
+            placed = _place_valley(cx + k, cy + (k % 3), occupied, want_sec)
+            if placed is None:
                 break
-            sx, sy = sp
+            sx, sy, layout = placed
             occupied.add((sx, sy))
-            t = store.get_tile(sx, sy)
-            sec_params = _params(rival.tier, is_capital=False)
             sec = _developed_village(
                 f"{rival.capital_prefix} {k}", rival.tribe, sx, sy, pid, server_speed,
-                is_capital=False, field_layout=t["layout"], template=rival.template,
+                is_capital=False, field_layout=layout, template=rival.template,
                 **sec_params)
             sec = store.insert_village(sec)
             sec_ids.append(sec.id)

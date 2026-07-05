@@ -25,16 +25,19 @@ def _seed(radius=45):
     store.DB_PATH = Path(tempfile.mkdtemp()) / "rivals.db"
     store.init_db()
     store.insert_tiles(W.generate_world(radius))
-    # Anneaux d'apparition ramenés dans le petit monde de test (déterministe).
-    for r in RIV.LEGENDS + RIV.MIDS:
-        r.radius = min(r.radius, radius - 10)
+    # Distances d'apparition ramenées dans le petit monde de test (déterministe). Sans
+    # humain semé, les rivaux `near` retombent sur `HUMAN_START` (60, 60) via `_human_ref`
+    # (hors petit monde) → on les rapproche aussi de l'origine pour le test.
+    for r in RIV.ALL_RIVALS:
+        r.dist = min(r.dist, radius - 10)
+        r.zone = "far"
 
 
 def test_seed_is_idempotent():
     _seed()
     a = RIV.spawn_rivals(server_speed=100)
     b = RIV.spawn_rivals(server_speed=100)   # 2ᵉ appel : marqueur présent ⇒ no-op
-    assert len(a) == len(RIV.LEGENDS) + len(RIV.MIDS)
+    assert len(a) == len(RIV.ALL_RIVALS)
     assert b == [], "le seeding rival doit être idempotent"
     assert store.find_player_by_name(RIV.SEED_MARKER) is not None
     print(f"✅ {len(a)} rivaux semés, re-seed = no-op")
