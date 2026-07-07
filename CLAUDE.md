@@ -337,6 +337,16 @@ Phase 3 en cours (livrée incrémentalement) :
   `serialize` expose par emplacement `can_demolish` + `demolish_finish_in`/`demolish_target`. UI :
   bouton « 🏚️ Démolir » (avec sélecteur de niveau cible) dans la modale du bâtiment + indicateur
   🏚️ sur la tuile et dans le bandeau des chantiers en cours.
+  ✅ **Correctif de fidélité — les prérequis ne gardent que la construction INITIALE, pas les
+  améliorations** (`village.enqueue_build` ne vérifie les `building.reqs` que si `target == 1`,
+  verrouillé par `tests/test_buildings.test_upgrade_survives_demolished_prerequisite`) : dans le
+  vrai Travian les prérequis sont contrôlés **au moment de la construction et jamais recalculés**
+  ⇒ **démolir un bâtiment prérequis ne fige pas** un bâtiment déjà construit, qui reste
+  **améliorable** ; seule la pose d'un **nouveau** bâtiment reste bloquée tant que ses prérequis
+  manquent (`enqueue_new_building`/`available_buildings`, contre les niveaux **courants**). Avant,
+  `enqueue_build` re-vérifiait les reqs à chaque montée de niveau ⇒ un prérequis démoli bloquait à
+  tort les améliorations. Recoupé **support.travian.com** / wiki Fandom « Main building » / Travian
+  Answers.
 - ✅ **File de construction planifiée (arbitrairement longue)** (`Village.build_plan`/`PlannedBuild`,
   `village.enqueue_build`/`enqueue_new_building`/`cancel_plan` + `_start_ready_builds`/`tick`,
   verrouillé par `tests/test_build_queue.py`) — **choix de dev assumé, écart documenté avec le vrai

@@ -650,12 +650,21 @@ def enqueue_build(v: Village, slot_index: int,
             raise BuildError("Hors capitale, les champs sont limités au niveau 10.")
         raise BuildError("Niveau maximum atteint.")
 
-    # Prérequis évalués contre l'état **projeté** (niveaux courants + file) : on peut
-    # ainsi enfiler un prérequis puis le bâtiment qui en dépend dans la même file.
-    levels = _projected_levels(v)
-    for bid, lvl in building.reqs.items():
-        if levels.get(bid, 0) < lvl:
-            raise BuildError(f"Prérequis manquant : {BLD.get(bid).name} niv {lvl}.")
+    # Prérequis : vérifiés **uniquement à la construction initiale** (niveau 0→1), jamais
+    # aux améliorations d'un bâtiment déjà posé. Fidèle au vrai Travian : les prérequis ne
+    # sont contrôlés qu'au moment de la construction et ne sont **pas recalculés** ensuite
+    # (support.travian.com / wiki Fandom « Main building » / Travian Answers) ⇒ démolir un
+    # bâtiment prérequis n'affecte pas les bâtiments déjà construits, qui restent
+    # améliorables ; seule la pose d'un **nouveau** bâtiment exige les prérequis
+    # (enqueue_new_building/available_buildings s'en charge, contre les niveaux courants).
+    # En pratique la pose niveau 1 passe par enqueue_new_building ; ce garde-fou ne couvre
+    # donc que le cas résiduel où enqueue_build viserait le niveau 1, évalué contre l'état
+    # **projeté** (niveaux courants + file) pour enfiler un prérequis puis son dépendant.
+    if target == 1:
+        levels = _projected_levels(v)
+        for bid, lvl in building.reqs.items():
+            if levels.get(bid, 0) < lvl:
+                raise BuildError(f"Prérequis manquant : {BLD.get(bid).name} niv {lvl}.")
 
     p = PlannedBuild(slot_index=slot_index, building_id=building_id, target_level=target)
     v.build_plan.append(p)

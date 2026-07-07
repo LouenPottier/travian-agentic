@@ -431,6 +431,39 @@ def test_demolish():
           "destruction ⇒ emplacement libéré")
 
 
+def test_upgrade_survives_demolished_prerequisite():
+    """Vrai Travian : les prérequis ne sont contrôlés qu'à la **construction initiale**
+    (niveau 0→1) et jamais recalculés ensuite. Démolir un bâtiment prérequis ne fige donc
+    pas un bâtiment déjà construit — on peut continuer à l'**améliorer** ; seule la pose
+    d'un **nouveau** bâtiment reste bloquée tant que ses prérequis manquent. Recoupé
+    support.travian.com / wiki Fandom « Main building » / Travian Answers."""
+    now = time.time()
+    v = _gaul(ACADEMY=5, SMITHY=5)   # slot 20 = académie niv 5, slot 21 = forge niv 5
+    acad, smithy = 20, 21
+    assert v.slots[acad].building_id == B.ACADEMY
+    assert v.slots[smithy].building_id == B.SMITHY
+    # La forge (id 12) exige académie niv 1 ; l'écurie (id 19) exige forge 3 + académie 5.
+
+    # On « démolit » entièrement l'académie (emplacement libéré) ⇒ prérequis disparu.
+    del v.slots[acad]
+
+    # Amélioration d'un bâtiment DÉJÀ construit (forge) : autorisée malgré la perte du
+    # prérequis (académie) — c'est le correctif (avant, enqueue_build re-vérifiait les reqs).
+    o = V.enqueue_build(v, smithy, now=now)
+    assert o.target_level == 6, ("la forge doit rester améliorable", o)
+
+    # Pose d'un NOUVEAU bâtiment qui exige ce prérequis (écurie → académie 5) : refusée.
+    free = 30
+    assert free not in v.slots
+    try:
+        V.enqueue_new_building(v, free, B.STABLES, now=now)
+        assert False, "poser une écurie sans académie 5 aurait dû échouer"
+    except V.BuildError as e:
+        print("refus attendu (nouveau bâtiment, prérequis manquant) :", e)
+    print("✅ prérequis démoli : amélioration d'un bâtiment existant OK, "
+          "nouvelle construction bloquée")
+
+
 def main():
     test_research_gating()
     test_smithy_combat()
@@ -441,6 +474,7 @@ def main():
     test_mansion_trapper_build_time()
     test_settler_chief_training_gating()
     test_demolish()
+    test_upgrade_survives_demolished_prerequisite()
     print("\n✅ Mécaniques de bâtiments (académie / forge / trappeur / pièges / "
           "grande caserne / siège / temps manoir / colons-chefs / démolition) validées")
 
