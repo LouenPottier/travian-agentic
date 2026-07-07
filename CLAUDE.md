@@ -314,8 +314,9 @@ Phase 3 en cours (livrée incrémentalement) :
   rétrogradée et ses **champs > 10 ramenés à 10** (sans remboursement, fidèle) ; (d) **bâtiments
   incompatibles retirés au changement** (`capital._drop_incompatible`, support.travian.com :
   « If your new capital has Great Barracks or Great Stable, those will be removed ») — la
-  **nouvelle** capitale perd ses bâtiments `non_capital` (grande caserne/écurie, grand
-  entrepôt/grenier), l'**ancienne** ses bâtiments `capital_only` (tailleur de pierre, brasserie ⇒
+  **nouvelle** capitale perd ses bâtiments `non_capital` (grande caserne/écurie ; ⚠️ **PAS**
+  le grand entrepôt/grenier, cf. correctif ci-dessous), l'**ancienne** ses bâtiments
+  `capital_only` (tailleur de pierre, brasserie ⇒
   fête de la bière interrompue), files purgées, sans remboursement ; généralisé via les flags
   pour préserver l'invariant de `available_buildings`. API
   `POST /api/village/{id}/make-capital` (+ `is_capital`/`can_make_capital` exposés par `serialize`) ;
@@ -527,6 +528,18 @@ Par ordre de rentabilité recommandé :
      `combat.demolish_points/_wall` divise par la durabilité — déjà prévu, jamais alimenté avant).
    - **Grand entrepôt / grand grenier** (id 37/38) : `village._storage` somme désormais
      `WAREHOUSE+GREAT_WAREHOUSE` (resp. `GRANARY+GREAT_GRANARY`), chacun = 3× la capacité ordinaire.
+     ⚠️ **Correctif de fidélité T4.6 — ils NE sont PAS `non_capital`** (`app/data/buildings.py`,
+     verrouillé par `tests/test_artifacts.test_storage_artifact_gates_great_warehouse` **sur une
+     capitale** + `tests/test_capital.test_make_capital_drops_incompatible_buildings`) : ils étaient
+     à tort flaggés `non_capital=True` (regroupés avec la grande caserne/écurie) ⇒ **invisibles
+     dans la capitale** même avec l'artefact du bâtisseur. **Faux** : le grand entrepôt/grenier
+     est **légitime en capitale**, c'est même son **usage premier** — seule la capitale monte ses
+     champs > 10, et il faut un grand grenier pour stocker assez de blé afin de monter les **champs
+     de blé au-delà du niv 19** (cropper). Recoupé **support.travian.com « Artefact Effects »** +
+     wiki Fandom (« impossible to upgrade wheat fields to >level 19 without great warehouses/
+     granaries »). Le flag retiré ⇒ ils survivent aussi à un changement de capitale
+     (`capital._drop_incompatible` ne les touche plus). Le gate artefact (`great_storage_allowed`)
+     reste correct. Seuls la **grande caserne/écurie** demeurent `non_capital`.
    - **Abreuvoir** (Romain, id 40) : `village.unit_upkeep` retire **−1 céréale/h** par cavalier romain
      aux paliers (Equites Legati niv 10, Imperatoris niv 15, Caesaris niv 20) ; `horse_pool_train_factor`
      accélère l'entraînement de la cavalerie de **−1 %/niveau** (appliqué dans `enqueue_training`).

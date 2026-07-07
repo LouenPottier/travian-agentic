@@ -282,8 +282,9 @@ def net_production(v: Village) -> list[float]:
 def _storage(v: Village, *building_ids: int) -> int:
     """Capacité totale de stockage : somme de tous les entrepôts/greniers du type
     demandé. Le **grand entrepôt** (GREAT_WAREHOUSE) et le **grand grenier**
-    (GREAT_GRANARY), hors capitale, s'additionnent à l'entrepôt/grenier ordinaire
-    (chacun avec sa propre capacité = 3× l'ordinaire, cf. F.great_capacity)."""
+    (GREAT_GRANARY) s'additionnent à l'entrepôt/grenier ordinaire (chacun avec sa propre
+    capacité = 3× l'ordinaire, cf. F.great_capacity) — y compris dans la capitale (c'est
+    même leur usage premier pour les croppers, cf. buildings.py)."""
     caps = [BLD.get(s.building_id).benefit(s.level)
             for s in v.slots.values()
             if s.building_id in building_ids and s.level > 0]

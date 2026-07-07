@@ -81,7 +81,8 @@ def _drop_incompatible(v: V.Village, *, is_capital: bool) -> list[int]:
     Great Barracks or Great Stable, those will be removed ». On généralise via les flags
     `capital_only`/`non_capital` (mêmes invariants que `village.available_buildings`) :
     - village **devenant** capitale ⇒ retire les bâtiments `non_capital` (grande caserne,
-      grande écurie, grand entrepôt, grand grenier) ;
+      grande écurie ; ⚠️ **PAS** le grand entrepôt/grenier — eux sont légitimes en capitale,
+      cf. buildings.py) ;
     - village **rétrogradé** ⇒ retire les bâtiments `capital_only` (tailleur de pierre,
       brasserie ; la merveille n'a pas ce flag et n'est pas concernée).
     Sans remboursement (fidèle, comme la baisse des champs > 10)."""

@@ -130,8 +130,9 @@ def test_brewery_capital_only():
 
 def test_make_capital_drops_incompatible_buildings():
     """Au changement de capitale : la **nouvelle** capitale perd ses bâtiments
-    `non_capital` (grand entrepôt…) et l'**ancienne** ses bâtiments `capital_only`
-    (tailleur de pierre…). Sans remboursement (support.travian.com « Capital Village »)."""
+    `non_capital` (grande caserne/écurie…) et l'**ancienne** ses bâtiments `capital_only`
+    (tailleur de pierre…). Sans remboursement (support.travian.com « Capital Village »).
+    ⚠️ Le grand entrepôt/grenier n'est **pas** concerné : il est légitime en capitale."""
     fresh()
     now = time.time()
     pid = store.create_player("Toi", Tribe.GAULS)
@@ -142,21 +143,26 @@ def test_make_capital_drops_incompatible_buildings():
     cap.slots[15] = V.Slot(building_id=B.STONEMASON, level=5)
     cap = store.insert_village(cap)
 
-    # Futur de capitale : un grand entrepôt (non_capital) qui devra disparaître,
-    # plus le palais requis pour déclarer la capitale.
+    # Futur de capitale : une grande caserne (non_capital) qui devra disparaître,
+    # plus le palais requis pour déclarer la capitale. On y pose aussi un grand entrepôt
+    # (PAS non_capital) qui, lui, doit **survivre** au changement.
     sec = V.new_village("Sec", Tribe.GAULS, server_speed=100, x=5, y=0,
                         player_id=pid, is_capital=False)
     sec.slots[20] = V.Slot(building_id=B.PALACE, level=1)
-    sec.slots[15] = V.Slot(building_id=B.GREAT_WAREHOUSE, level=3)
+    sec.slots[15] = V.Slot(building_id=B.GREAT_BARRACKS, level=3)
+    sec.slots[16] = V.Slot(building_id=B.GREAT_WAREHOUSE, level=3)
     sec = store.insert_village(sec)
 
     info = CAP.make_capital(pid, sec.id, now)
     new_cap = store.load_village(sec.id)
     old_cap = store.load_village(cap.id)
 
-    assert B.GREAT_WAREHOUSE not in {s.building_id for s in new_cap.slots.values()}, \
-        "le grand entrepôt doit disparaître de la nouvelle capitale"
-    assert B.GREAT_WAREHOUSE in info["removed_new_capital"]
+    assert B.GREAT_BARRACKS not in {s.building_id for s in new_cap.slots.values()}, \
+        "la grande caserne doit disparaître de la nouvelle capitale"
+    assert B.GREAT_BARRACKS in info["removed_new_capital"]
+    assert B.GREAT_WAREHOUSE in {s.building_id for s in new_cap.slots.values()}, \
+        "le grand entrepôt doit SURVIVRE dans la nouvelle capitale (pas non_capital)"
+    assert B.GREAT_WAREHOUSE not in info["removed_new_capital"]
     assert B.STONEMASON not in {s.building_id for s in old_cap.slots.values()}, \
         "le tailleur de pierre doit disparaître de l'ancienne capitale"
     assert B.STONEMASON in info["removed_old_capital"]

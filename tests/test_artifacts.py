@@ -92,9 +92,10 @@ def test_storage_artifact_gates_great_warehouse():
     du bâtisseur (storage). Petit ⇒ village de stockage seul ; grand ⇒ tout le compte."""
     _fresh()
     pid = store.create_player("Joueur", Tribe.GAULS)
-    # Villages **non capitales** (le grand entrepôt/grenier est `non_capital`) avec
-    # bâtiment principal niv 10 (prérequis) : seul l'artefact doit rester bloquant.
-    a = _owned_village(pid, 50, 50, "A", capital=False)
+    # Village **capitale** (A) + secondaire (B), tous deux avec bâtiment principal niv 10
+    # (prérequis) : seul l'artefact doit rester bloquant. ⚠️ A est capitale exprès — le
+    # grand entrepôt/grenier N'est PAS `non_capital` (usage cropper, cf. buildings.py).
+    a = _owned_village(pid, 50, 50, "A", capital=True)
     b = _owned_village(pid, 52, 50, "B", capital=False)
     for vid in (a.id, b.id):
         v = store.load_village(vid)
@@ -114,7 +115,8 @@ def test_storage_artifact_gates_great_warehouse():
     # Petit artefact de stockage dans A ⇒ débloqué dans A seulement.
     small = store.insert_artifact(5, "small", natar_village_id=-1)
     store.capture_artifact(small, pid, a.id)
-    assert buildable(a.id), "petit storage : grand entrepôt débloqué dans son village"
+    assert buildable(a.id), \
+        "petit storage : grand entrepôt débloqué dans son village (capitale incluse)"
     assert not buildable(b.id), "petit storage : pas ailleurs"
     # Un grand artefact (effet de compte), stocké en B ⇒ débloqué partout.
     large = store.insert_artifact(5, "large", natar_village_id=-1)

@@ -202,12 +202,19 @@ _BUILDINGS = [
        tribe=Tribe.GAULS, multi=True),
     _b(id=B.HERO_MANSION, name="Manoir du héros", cost=(700, 670, 700, 240), k=1.33, u=2, cp=1,
        _time=F.make_time(2300, 1.16, 0), benefit=F.slots3, reqs={B.MAIN_BUILDING: 3, B.RALLY_POINT: 1}),
+    # Grand entrepôt / grand grenier : ⚠️ **PAS `non_capital`** — contrairement à la grande
+    # caserne/écurie, ils SONT constructibles dans la capitale, et c'est même leur usage
+    # premier : seule la capitale monte ses champs > 10, et il faut un grand grenier pour
+    # stocker assez de blé afin de monter les champs de blé au-delà du niv 19 (cropper).
+    # Recoupé support.travian.com « Artefact Effects » + wiki Fandom (« impossible to upgrade
+    # wheat fields to >level 19 without great warehouses/granaries », usage cropper capitale).
+    # Ils restent débloqués par l'artefact du bâtisseur (cf. artifacts.great_storage_allowed).
     _b(id=B.GREAT_WAREHOUSE, name="Grand entrepôt", cost=(650, 800, 450, 200), k=1.28, u=1, cp=1,
        _time=F.make_time(10875), benefit=F.great_capacity, reqs={B.MAIN_BUILDING: 10},
-       multi=True, non_capital=True),
+       multi=True),
     _b(id=B.GREAT_GRANARY, name="Grand grenier", cost=(400, 500, 350, 100), k=1.28, u=1, cp=1,
        _time=F.make_time(8875), benefit=F.great_capacity, reqs={B.MAIN_BUILDING: 10},
-       multi=True, non_capital=True),
+       multi=True),
     _b(id=B.HORSE_POOL, name="Abreuvoir", cost=(780, 420, 660, 540), k=1.28, u=5, cp=3,
        _time=F.make_time(5950, 2), benefit=F.percent(1), reqs={B.RALLY_POINT: 10, B.STABLES: 20},
        tribe=Tribe.ROMANS),
