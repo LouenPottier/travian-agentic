@@ -186,6 +186,92 @@ def test_traps_in_combat():
     print("✅ capture totale ⇒ pas de bataille ; libération vide les pièges")
 
 
+def test_sync_trapper_frees_excess_prisoners():
+    """Trappeur démoli/détruit ⇒ pièges réalignés sur la capacité, prisonniers
+    excédentaires libérés (au prorata, depuis le dernier groupe capturé)."""
+    store.DB_PATH = Path(tempfile.mkdtemp()) / "sync_trap.db"
+    store.init_db()
+    v = _gaul(TRAPPER=20)                       # capacité 400
+    v.traps = 30
+    V.add_prisoners(v, 7, 100, int(Tribe.GAULS), [0, 12, 0, 0, 18] + [0] * 5)  # 30 unités
+    assert V.prisoners_count(v) == 30
+
+    # Trappeur ramené niv 2 (capacité 22) ⇒ 8 unités libérées, 22 retenues.
+    v.slots[20].level = 2
+    freed = V.sync_trapper(v)
+    assert v.traps == 22 and V.prisoners_count(v) == 22
+    assert sum(g["units"][i] for g in freed for i in range(10)) == 8
+
+    # Trappeur détruit (slot supprimé) ⇒ tous les prisonniers restants libérés.
+    del v.slots[20]
+    freed = V.sync_trapper(v)
+    assert v.traps == 0 and V.prisoners_count(v) == 0 and not v.prisoners
+    assert sum(g["units"][i] for g in freed for i in range(10)) == 22
+    print("✅ sync_trapper : pièges détruits ⇒ prisonniers excédentaires libérés")
+
+
+def test_release_kill_and_destroy_endpoints():
+    """API : (1) libération d'un prisonnier depuis le village piégeur ⇒ retour au
+    propriétaire ; (2) exécution de ses propres troupes piégées depuis le village
+    piégé ⇒ pertes définitives, pas de retour ; (3) trappeur détruit ⇒ prisonniers
+    restants rendus à leur propriétaire (via `_get`/`_reconcile_trapper`)."""
+    store.DB_PATH = Path(tempfile.mkdtemp()) / "trap_api.db"
+    store.init_db()
+    import app.main as APP
+    att_pid = store.create_player("Att", Tribe.GAULS)
+    def_pid = store.create_player("Def", Tribe.GAULS)
+    att = V.new_village("Att", Tribe.GAULS, server_speed=100, x=0, y=0, player_id=att_pid)
+    att = store.insert_village(att)
+    deff = _gaul(TRAPPER=20)                    # capacité 400 ⇒ garde 30 pièges
+    deff.player_id = def_pid
+    deff.x, deff.y = 1, 0
+    deff.traps = 30
+    deff = store.insert_village(deff)
+
+    def _hold(units):
+        d = store.load_village(deff.id)
+        V.add_prisoners(d, att_pid, att.id, int(Tribe.GAULS), units)
+        store.save_village(d)
+
+    # (1) Libération depuis le piégeur (acting = défenseur) ⇒ Att récupère ses troupes.
+    _hold([0, 30] + [0] * 8)
+    tok = APP._ACTING_PLAYER.set(def_pid)
+    try:
+        APP.release_prisoners(deff.id, 0)
+    finally:
+        APP._ACTING_PLAYER.reset(tok)
+    assert store.load_village(att.id).troops[1] == 30
+    assert V.prisoners_count(store.load_village(deff.id)) == 0
+
+    # (2) Exécution depuis le piégé (acting = attaquant) ⇒ pertes définitives.
+    _hold([0, 25] + [0] * 8)
+    a = store.load_village(att.id); a.troops[1] = 0; store.save_village(a)
+    tok = APP._ACTING_PLAYER.set(att_pid)
+    try:
+        APP.kill_trapped(att.id, deff.id)
+    finally:
+        APP._ACTING_PLAYER.reset(tok)
+    assert store.load_village(att.id).troops[1] == 0, "les troupes tuées ne reviennent pas"
+    assert V.prisoners_count(store.load_village(deff.id)) == 0
+
+    # (3) Trappeur détruit (démolition simulée : slot supprimé) ⇒ `_get` reconcilie et
+    #     rend les prisonniers restants à leur propriétaire.
+    _hold([0, 18] + [0] * 8)
+    a = store.load_village(att.id); a.troops[1] = 0; store.save_village(a)
+    d = store.load_village(deff.id)
+    del d.slots[20]                            # trappeur détruit
+    store.save_village(d)
+    tok = APP._ACTING_PLAYER.set(def_pid)
+    try:
+        APP._get(deff.id)                      # déclenche _reconcile_trapper
+    finally:
+        APP._ACTING_PLAYER.reset(tok)
+    assert store.load_village(att.id).troops[1] == 18, "prisonniers libérés à la destruction"
+    d = store.load_village(deff.id)
+    assert d.traps == 0 and V.prisoners_count(d) == 0
+    print("✅ API : libérer (retour) / tuer (perte) / trappeur détruit (libération)")
+
+
 def test_great_barracks_trains():
     """La grande caserne forme les mêmes unités que la caserne, à coût ×3, via sa
     propre file (entraînement en parallèle de la caserne normale)."""
@@ -319,6 +405,11 @@ def test_settler_chief_training_gating():
 def test_chief_requires_academy_research():
     """Vrai Travian : le chef/sénateur/chef de clan se **recherche à l'académie (niveau 20)**
     avant d'être formable au palais. Recoupé travian.fandom.com « Senator/Chief/Chieftain »."""
+    # DB propre : `chief_training_allowance` lit `store.player_villages` (emplacements
+    # d'expansion) ⇒ le test doit isoler son état, sinon il dépend des villages laissés
+    # par le test précédent (le joueur 1 doit n'avoir aucun village persisté ici).
+    store.DB_PATH = Path(tempfile.mkdtemp()) / "chief.db"
+    store.init_db()
     now = time.time()
     v = _gaul(resources=500000.0, PALACE=10, ACADEMY=20)
     chief = next(i for i, u in enumerate(V.UNITS[Tribe.GAULS]) if u.is_chief)
@@ -464,6 +555,51 @@ def test_upgrade_survives_demolished_prerequisite():
           "nouvelle construction bloquée")
 
 
+def test_prereq_timing():
+    """Vérifie que les prérequis à la construction sont bien vérifiés au **lancement**
+    de la construction (niveau 0→1) et non à la mise en queue. Une fois le bâtiment
+    posé, ses améliorations (niveau ≥ 2) ne nécessitent plus de prérequis, même si
+    un prérequis est démoli après la pose."""
+    now = time.time()
+    # Village avec bâtiment principal niv 1 (pas assez pour poser une écurie, qui exige
+    # forge niv 3 + académie niv 5).
+    v = _gaul(MAIN_BUILDING=1, resources=500000.0)  # ressources suffisantes
+    free_slot = 30
+    assert free_slot not in v.slots
+
+    # 1. Vérification des prérequis au moment de la pose (niveau 0→1) : refusée si manquants.
+    try:
+        V.enqueue_new_building(v, free_slot, B.STABLES, now=now)
+        assert False, "pose d'une écurie sans prérequis aurait dû échouer"
+    except V.BuildError as e:
+        print("refus attendu (pose sans prérequis) :", e)
+
+    # 2. Après avoir monté les prérequis (forge niv 3 + académie niv 5), la pose est autorisée.
+    v.slots[20] = V.Slot(building_id=B.SMITHY, level=3)  # forge niv 3
+    v.slots[21] = V.Slot(building_id=B.ACADEMY, level=5)  # académie niv 5
+    
+    # Vérifie que l'écurie est maintenant disponible.
+    available = V.available_buildings(v, free_slot)
+    assert B.STABLES in [b.id for b in available], "l'écurie doit être disponible après prérequis"
+    
+    # La pose est autorisée (les ressources sont vérifiées ici, mais pas débitées).
+    order = V.enqueue_new_building(v, free_slot, B.STABLES, now=now)
+    assert order.target_level == 1, "la pose doit cibler le niveau 1"
+    
+    # 3. Simule une pose manuelle (sans tick) pour tester l'amélioration.
+    # On ajoute manuellement l'écurie au niveau 1.
+    v.slots[free_slot] = V.Slot(building_id=B.STABLES, level=1)
+    
+    # 4. Amélioration (niveau 1→2) : autorisée même si un prérequis est démoli après la pose.
+    # On « démolit » la forge (prérequis pour l'écurie).
+    del v.slots[20]  # forge niv 3
+    
+    # L'amélioration doit être autorisée malgré la perte du prérequis.
+    order2 = V.enqueue_build(v, free_slot, now=now)
+    assert order2.target_level == 2, "l'amélioration doit cibler le niveau 2"
+    print("✅ prérequis : vérifiés à la pose (niveau 0→1), ignorés pour les améliorations (niveau ≥ 2)")
+
+
 def main():
     test_research_gating()
     test_smithy_combat()
@@ -475,8 +611,9 @@ def main():
     test_settler_chief_training_gating()
     test_demolish()
     test_upgrade_survives_demolished_prerequisite()
+    test_prereq_timing()
     print("\n✅ Mécaniques de bâtiments (académie / forge / trappeur / pièges / "
-          "grande caserne / siège / temps manoir / colons-chefs / démolition) validées")
+          "grande caserne / siège / temps manoir / colons-chefs / démolition / prérequis) validées")
 
 
 if __name__ == "__main__":
